@@ -31,10 +31,14 @@ data class TouchLayout(
     val releaseTaps: Map<Int, Pair<Float, Float>> = emptyMap(), // mã Linux -> tap khi NHẢ phím
     val freeLookKeys: Set<Int> = emptySet(), // phím đổi chế độ con trỏ <-> nhìn tự do (như F9)
     val macros: Map<Int, List<MacroStep>> = emptyMap(), // mã Linux -> chuỗi bước macro
-    val dampX: Int = Config.DAMP_DEFAULT, // đầm tâm X (mức 1..10, EMA alpha = 1/mức)
+    val dampX: Int = Config.DAMP_DEFAULT, // đầm tâm X (mức 1..100, EMA alpha = 1/mức đầm; xem Config.dampAlpha)
     val dampY: Int = Config.DAMP_DEFAULT, // đầm tâm Y
     val cursorSpeed: Float = Config.CURSOR_SPEED_DEFAULT, // tốc độ con trỏ ảo (chế độ con trỏ)
     val overlayToggleKey: Int = Config.OVERLAY_TOGGLE_KEY, // phím ẩn/hiện lớp phủ
+    // Build-11: giới hạn vùng con trỏ (0 = TẮT, 1 = TOÀN MÀN, 2 = MÀN PHẢI)
+    // + phím bật/tắt chuột (0 = chưa gán).
+    val cursorRegion: Int = Config.CURSOR_REGION_DEFAULT,
+    val mouseToggleKey: Int = Config.MOUSE_TOGGLE_KEY_UNBOUND,
 ) {
     companion object {
         /** Bộ mặc định cho game bắn súng kiểu Free Fire (tọa độ trong Config). */
@@ -97,6 +101,16 @@ class TouchMapper(
      */
     var cursorMode = true
         private set
+
+    /**
+     * Chuột có đang bật không (build-11): tắt thì onMouseMove bỏ mọi di
+     * chuyển (con trỏ đứng yên + camera không xoay); phím/nút vẫn tiêm
+     * bình thường. Đổi bằng phím bật/tắt chuột (gán trong bảng chỉnh
+     * camera), double-tap vòng camera, hoặc lệnh MOUSE. Mặc định bật.
+     * reset() KHÔNG đụng tới cờ này (bật/tắt MAP giữ nguyên trạng thái).
+     */
+    @Volatile
+    var mouseEnabled = true
 
     // Vị trí con trỏ ảo (pixel). Khởi tạo lười ở tâm vùng camera.
     private var cursorX = 0f
@@ -350,12 +364,14 @@ class TouchMapper(
 
     /**
      * Làm mượt delta chuột REL bằng EMA theo từng trục (đầm tâm): alpha =
-     * 1/mức. Mức 1 -> alpha = 1 (delta thô, không làm mượt); mức cao ->
-     * delta biến thiên chậm, tâm đầm/ổn định hơn nhưng phản hồi chậm hơn.
+     * 1/mức đầm, mức đầm = 1 + (giá trị UI 1..100 - 1)/11 (xem
+     * Config.dampAlpha). Mức 1 -> alpha = 1 (delta thô, không làm mượt);
+     * mức cao -> delta biến thiên chậm, tâm đầm/ổn định hơn nhưng phản hồi
+     * chậm hơn.
      */
     private fun smoothDelta(dx: Int, dy: Int): Pair<Float, Float> {
-        val ax = 1f / layout.dampX.coerceIn(Config.DAMP_MIN, Config.DAMP_MAX)
-        val ay = 1f / layout.dampY.coerceIn(Config.DAMP_MIN, Config.DAMP_MAX)
+        val ax = Config.dampAlpha(layout.dampX)
+        val ay = Config.dampAlpha(layout.dampY)
         smoothDx += (dx - smoothDx) * ax
         smoothDy += (dy - smoothDy) * ay
         return smoothDx to smoothDy
@@ -372,14 +388,22 @@ class TouchMapper(
     }
 
     private fun onMouseMove(dx: Int, dy: Int, nowMs: Long): List<TouchEngine.MotionEventSpec> {
+        // Build-11: chuột đang tắt thì bỏ mọi di chuyển (con trỏ đứng yên,
+        // camera không xoay). Phím/nút vẫn tiêm bình thường.
+        if (!mouseEnabled) return emptyList()
         val (sdx, sdy) = smoothDelta(dx, dy)
         if (cursorMode) {
             // Chế độ con trỏ: chuột chỉ di chuyển con trỏ ảo, không đè ngón.
             // Đang giữ nút chuột thì ngón bấm đi theo con trỏ (kéo/thả trong menu game).
             // Tốc độ con trỏ dùng layout.cursorSpeed — KHÁC độ nhạy X/Y
             // (độ nhạy chỉ dùng cho camera ở chế độ nhìn tự do).
+            // Build-11: giới hạn vùng con trỏ — MÀN PHẢI thì x không sang
+            // được nửa trái (x >= 50% chiều rộng); TẮT/TOÀN MÀN thì cả màn hình.
             ensureCursorInit()
-            cursorX = (cursorX + sdx * layout.cursorSpeed).coerceIn(0f, displayW.toFloat())
+            val minX = if (layout.cursorRegion == Config.CURSOR_REGION_RIGHT) {
+                displayW / 2f
+            } else 0f
+            cursorX = (cursorX + sdx * layout.cursorSpeed).coerceIn(minX, displayW.toFloat())
             cursorY = (cursorY + sdy * layout.cursorSpeed).coerceIn(0f, displayH.toFloat())
             if (cursorTapCode != null) {
                 engine.setPosition(TouchEngine.POINTER_CAMERA, cursorX, cursorY)

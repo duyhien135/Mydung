@@ -106,12 +106,12 @@ class TouchProtocolTest {
             injectOk = true,
         )
         assertEquals(
-            "MAP map=1 display=2560x1600 pointers=2 latencyMs=4 injectErr=0 injectOk=1 injector=reflect mode=camera cursor=0.50,0.50 overlay=0",
+            "MAP map=1 display=2560x1600 pointers=2 latencyMs=4 injectErr=0 injectOk=1 injector=reflect mode=camera cursor=0.50,0.50 overlay=0 mouse=1 grab=none",
             s,
         )
         val s2 = TouchProtocol.formatMapStatus(false, null, 0, 0, 3, false)
         assertEquals(
-            "MAP map=0 display=none pointers=0 latencyMs=0 injectErr=3 injectOk=0 injector=reflect mode=camera cursor=0.50,0.50 overlay=0",
+            "MAP map=0 display=none pointers=0 latencyMs=0 injectErr=3 injectOk=0 injector=reflect mode=camera cursor=0.50,0.50 overlay=0 mouse=1 grab=none",
             s2,
         )
         assertTrue(s2.contains("display=none"))
@@ -147,8 +147,10 @@ class TouchProtocolTest {
         )
         assertTrue(s.contains("injector=evdev"))
         assertTrue(s.contains("cursor=0.50,0.50"))
-        // Build-9: cuối dòng thêm overlay=0 (lớp phủ không bị ẩn).
-        assertTrue(s.endsWith("overlay=0"))
+        // Build-9: có overlay=0 (lớp phủ không bị ẩn); build-11: cuối dòng
+        // thêm mouse=1 grab=none.
+        assertTrue(s.contains("overlay=0"))
+        assertTrue(s.endsWith("grab=none"))
     }
 
     @Test
@@ -162,7 +164,8 @@ class TouchProtocolTest {
             injectOk = true,
             overlayHidden = true,
         )
-        assertTrue(s.endsWith("overlay=1"))
+        assertTrue(s.contains("overlay=1"))
+        assertTrue(s.endsWith("grab=none"))
     }
 
     @Test
@@ -171,7 +174,9 @@ class TouchProtocolTest {
         assertEquals(250, TouchProtocol.parsePollRate("POLLRATE 250"))
         assertEquals(500, TouchProtocol.parsePollRate("POLLRATE 500"))
         assertEquals(1000, TouchProtocol.parsePollRate("POLLRATE 1000"))
-        assertNull(TouchProtocol.parsePollRate("POLLRATE 60")) // không trong danh sách
+        // Build-11: thêm 60 Hz và 0 = NO LIMIT.
+        assertEquals(60, TouchProtocol.parsePollRate("POLLRATE 60"))
+        assertEquals(0, TouchProtocol.parsePollRate("POLLRATE 0"))
         assertNull(TouchProtocol.parsePollRate("POLLRATE 2000"))
         assertNull(TouchProtocol.parsePollRate("POLLRATE abc"))
         assertNull(TouchProtocol.parsePollRate("POLLRATE"))
@@ -205,5 +210,41 @@ class TouchProtocolTest {
         assertNull(TouchProtocol.parseInject("INJECT foo"))
         assertNull(TouchProtocol.parseInject("INJECT reflect extra"))
         assertNull(TouchProtocol.parseInject("INJECT REFLECT")) // phân biệt hoa/thường
+    }
+
+    // ── Build-11: MOUSE, mouse=/grab=, khóa TOUCHCFG mới ──
+
+    @Test
+    fun parseMouse_validAndInvalid() {
+        assertEquals(true, TouchProtocol.parseMouse("MOUSE 1"))
+        assertEquals(false, TouchProtocol.parseMouse("MOUSE 0"))
+        assertNull(TouchProtocol.parseMouse("MOUSE 2"))
+        assertNull(TouchProtocol.parseMouse("MOUSE"))
+        assertNull(TouchProtocol.parseMouse("MOUSE on"))
+        assertNull(TouchProtocol.parseMouse("MAP 1"))
+    }
+
+    @Test
+    fun formatMapStatus_mouseOffAndGrab() {
+        val s = TouchProtocol.formatMapStatus(
+            mapOn = true,
+            display = null,
+            pointers = 0,
+            latencyMs = 0,
+            injectErr = 0,
+            injectOk = true,
+            mouseEnabled = false,
+            grabMethod = "lc-mut",
+        )
+        assertTrue(s.contains("mouse=0"))
+        assertTrue(s.endsWith("grab=lc-mut"))
+    }
+
+    @Test
+    fun parseTouchCfg_build11Keys() {
+        val v = TouchProtocol.parseTouchCfg("TOUCHCFG cursorRegion=2 mouseKey=59")
+        assertEquals(2f, v?.get("cursorRegion"))
+        assertEquals(59f, v?.get("mouseKey"))
+        assertNull(TouchProtocol.parseTouchCfg("TOUCHCFG foo=1")) // khóa lạ: từ chối cả lệnh
     }
 }

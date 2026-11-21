@@ -304,6 +304,11 @@ object Server {
                         if (hidden == null) reply("ERR bad_overlay_args")
                         else reply(TouchHub.setOverlayHidden(hidden))
                     }
+                    trimmed.startsWith("MOUSE ") -> {
+                        val on = TouchProtocol.parseMouse(trimmed)
+                        if (on == null) reply("ERR bad_mouse_args")
+                        else reply(TouchHub.setMouseEnabled(on))
+                    }
                     trimmed == "MAPSTATUS" -> {
                         reply(TouchHub.mapStatus())
                     }

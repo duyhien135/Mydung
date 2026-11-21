@@ -240,7 +240,17 @@ fun HomeScreen(
             val c = ServerManager.getSavedConnection(context)
             if (c != null) {
                 try {
-                    InputClient.setMap(c.first, c.second, true)
+                    // Build-11: kiểm tra phản hồi — trước đây bỏ qua ERR
+                    // (vd "ERR no_display" khi DISPLAY chưa tới Server) nên
+                    // MAP lặng lẽ không bật mà người dùng không biết vì sao
+                    // con trỏ đứng im / phím không ăn.
+                    val resp = InputClient.setMap(c.first, c.second, true)
+                    if (!resp.startsWith("OK")) {
+                        withContext(Dispatchers.Main) {
+                            hint = "Mở game được nhưng chưa bật được keymap ($resp) — " +
+                                "bấm nút K trong game rồi chọn \"Bật keymap\"."
+                        }
+                    }
                 } catch (_: Exception) {
                 }
             }

@@ -59,18 +59,25 @@ data class Profile(
     val name: String,
     val packageName: String?, // game gán (null = chưa gán)
     val schemaVersion: Int,
-    val sensX: Float,
-    val sensY: Float,
+    // Build-11: độ nhạy thang UI 1..100 (trước là hệ số Float 0.1..5.0).
+    // toLayout() đổi sang hệ số engine bằng Config.sensFactor().
+    val sensX: Int,
+    val sensY: Int,
     val mapToggleKey: Int,
     val elements: List<ProfileElement>,
     // Phím chuyển chế độ con trỏ <-> nhìn tự do (mặc định F9). Có giá trị
     // mặc định để code cũ tạo Profile không cần sửa.
     val cursorToggleKey: Int = Config.CURSOR_TOGGLE_KEY,
-    // Build-9: Đầm tâm X/Y (mức 1..10, 1 = không làm mượt) + phím ẩn/hiện
-    // lớp phủ (mặc định F10). Mặc định để profile cũ vẫn tạo được.
+    // Build-9: Đầm tâm X/Y (build-11: mức 1..100, 1 = không làm mượt) +
+    // phím ẩn/hiện lớp phủ (mặc định F1 từ build-11, trước là F10).
+    // Mặc định để profile cũ vẫn tạo được.
     val dampX: Int = Config.DAMP_DEFAULT,
     val dampY: Int = Config.DAMP_DEFAULT,
     val overlayToggleKey: Int = Config.OVERLAY_TOGGLE_KEY,
+    // Build-11: giới hạn vùng con trỏ (0 = TẮT, 1 = TOÀN MÀN,
+    // 2 = MÀN PHẢI) + phím bật/tắt chuột (0 = chưa gán).
+    val cursorRegion: Int = Config.CURSOR_REGION_DEFAULT,
+    val mouseToggleKey: Int = Config.MOUSE_TOGGLE_KEY_UNBOUND,
 ) {
     /** Chuyển profile thành bố cục cho TouchMapper. Thiếu joystick/camera thì dùng mặc định GĐ4. */
     fun toLayout(displayW: Int, displayH: Int): TouchLayout {
@@ -119,8 +126,10 @@ data class Profile(
                 .coerceIn(Config.CAM_RADIUS_MIN, Config.CAM_RADIUS_MAX),
             // Vùng camera vuông theo pixel: nửa cao = nửa rộng * tỉ lệ màn hình.
             camHH = cam?.let { it.size * displayW / displayH } ?: Config.CAM_HALF_H,
-            sensX = sensX,
-            sensY = sensY,
+            // Build-11: độ nhạy UI 1..100 -> hệ số engine (1 -> 0.05,
+            // 20 -> 1.0, 100 -> 5.0); đầm tâm kẹp 1..100.
+            sensX = Config.sensFactor(sensX),
+            sensY = Config.sensFactor(sensY),
             buttons = buttons,
             swipes = swipes,
             mapToggleKey = mapToggleKey,
@@ -132,13 +141,20 @@ data class Profile(
             dampX = dampX.coerceIn(Config.DAMP_MIN, Config.DAMP_MAX),
             dampY = dampY.coerceIn(Config.DAMP_MIN, Config.DAMP_MAX),
             overlayToggleKey = overlayToggleKey,
+            cursorRegion = cursorRegion.coerceIn(
+                Config.CURSOR_REGION_OFF, Config.CURSOR_REGION_RIGHT,
+            ),
+            mouseToggleKey = mouseToggleKey,
         )
     }
 }
 
 /** Serialize/deserialize Profile <-> JSON 1 dòng (lệnh PROFILE, file lưu, xuất/nhập). */
 object ProfileCodec {
-    const val CURRENT_VERSION = 1
+    // Build-11: version 2 — độ nhạy/đầm tâm chuyển sang thang 1..100
+    // (v1: nhạy Float 0.1..5.0, đầm Int 1..10). fromJson migrate v1 -> v2
+    // theo công thức trong Config (nhạy: *20; đầm: 1+(mức-1)*11).
+    const val CURRENT_VERSION = 2
 
     sealed class Result {
         data class Ok(val profile: Profile) : Result()
@@ -189,8 +205,8 @@ object ProfileCodec {
             name = name,
             packageName = packageName,
             schemaVersion = CURRENT_VERSION,
-            sensX = Config.SENS_X,
-            sensY = Config.SENS_Y,
+            sensX = Config.SENS_UI_DEFAULT,
+            sensY = Config.SENS_UI_DEFAULT,
             mapToggleKey = Config.MAP_TOGGLE_KEY,
             elements = elements,
         )
@@ -248,6 +264,10 @@ object ProfileCodec {
         root["dampX"] = JsonValue.Num(p.dampX.toDouble())
         root["dampY"] = JsonValue.Num(p.dampY.toDouble())
         root["overlayKey"] = JsonValue.Num(p.overlayToggleKey.toDouble())
+        // Build-11: giới hạn vùng con trỏ + phím bật/tắt chuột
+        // (JSON cũ thiếu -> TẮT / chưa gán).
+        root["cursorRegion"] = JsonValue.Num(p.cursorRegion.toDouble())
+        root["mouseKey"] = JsonValue.Num(p.mouseToggleKey.toDouble())
         root["elements"] = JsonValue.Arr(elements)
         return JsonValue.Obj(root)
     }
@@ -269,19 +289,47 @@ object ProfileCodec {
         val id = root["id"]?.str()?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
         val name = root["name"]?.str()?.takeIf { it.isNotBlank() } ?: "Profile"
         val pkg = root["package"]?.str()?.takeIf { it.isNotBlank() }
-        val sensX = root["sensX"]?.num()?.toFloat()?.takeIf { it.isFinite() }?.coerceIn(0.1f, 5f)
-            ?: Config.SENS_X
-        val sensY = root["sensY"]?.num()?.toFloat()?.takeIf { it.isFinite() }?.coerceIn(0.1f, 5f)
-            ?: Config.SENS_Y
+        // Build-11: v1 dùng thang cũ (nhạy Float 0.1..5.0, đầm Int 1..10)
+        // -> migrate sang thang 1..100; v2 đọc thẳng thang mới.
+        val sensX = if (version < 2) {
+            root["sensX"]?.num()?.toFloat()?.takeIf { it.isFinite() }
+                ?.let { Config.sensUiValue(it) } ?: Config.SENS_UI_DEFAULT
+        } else {
+            root["sensX"]?.int()?.coerceIn(Config.SENS_UI_MIN, Config.SENS_UI_MAX)
+                ?: Config.SENS_UI_DEFAULT
+        }
+        val sensY = if (version < 2) {
+            root["sensY"]?.num()?.toFloat()?.takeIf { it.isFinite() }
+                ?.let { Config.sensUiValue(it) } ?: Config.SENS_UI_DEFAULT
+        } else {
+            root["sensY"]?.int()?.coerceIn(Config.SENS_UI_MIN, Config.SENS_UI_MAX)
+                ?: Config.SENS_UI_DEFAULT
+        }
         val toggleKey = root["toggleKey"]?.int() ?: Config.MAP_TOGGLE_KEY
         // JSON cũ (trước khi có chế độ con trỏ) thiếu cursorKey -> mặc định F9.
         val cursorKey = root["cursorKey"]?.int() ?: Config.CURSOR_TOGGLE_KEY
-        // Build-9: JSON cũ thiếu dampX/dampY/overlayKey -> mặc định (1/1/F10).
-        val dampX = root["dampX"]?.int()?.coerceIn(Config.DAMP_MIN, Config.DAMP_MAX)
-            ?: Config.DAMP_DEFAULT
-        val dampY = root["dampY"]?.int()?.coerceIn(Config.DAMP_MIN, Config.DAMP_MAX)
-            ?: Config.DAMP_DEFAULT
+        // Build-9: JSON cũ thiếu dampX/dampY/overlayKey -> mặc định.
+        // Đầm tâm v1 (1..10) migrate sang 1..100.
+        val dampX = if (version < 2) {
+            root["dampX"]?.int()?.let { Config.dampUiValue(it) } ?: Config.DAMP_DEFAULT
+        } else {
+            root["dampX"]?.int()?.coerceIn(Config.DAMP_MIN, Config.DAMP_MAX)
+                ?: Config.DAMP_DEFAULT
+        }
+        val dampY = if (version < 2) {
+            root["dampY"]?.int()?.let { Config.dampUiValue(it) } ?: Config.DAMP_DEFAULT
+        } else {
+            root["dampY"]?.int()?.coerceIn(Config.DAMP_MIN, Config.DAMP_MAX)
+                ?: Config.DAMP_DEFAULT
+        }
+        // JSON cũ thiếu overlayKey -> mặc định F1 (build-11); profile đã
+        // lưu F10 giữ nguyên F10 (không đè).
         val overlayKey = root["overlayKey"]?.int() ?: Config.OVERLAY_TOGGLE_KEY
+        // Build-11: JSON cũ thiếu cursorRegion/mouseKey -> TẮT / chưa gán.
+        val cursorRegion = root["cursorRegion"]?.int()
+            ?.coerceIn(Config.CURSOR_REGION_OFF, Config.CURSOR_REGION_RIGHT)
+            ?: Config.CURSOR_REGION_DEFAULT
+        val mouseKey = root["mouseKey"]?.int() ?: Config.MOUSE_TOGGLE_KEY_UNBOUND
 
         val elements = ArrayList<ProfileElement>()
         val rawElements = root["elements"]?.arr() ?: emptyList()
@@ -364,7 +412,7 @@ object ProfileCodec {
         }
         val profile = Profile(
             id, name, pkg, CURRENT_VERSION, sensX, sensY, toggleKey, elements, cursorKey,
-            dampX, dampY, overlayKey,
+            dampX, dampY, overlayKey, cursorRegion, mouseKey,
         )
         return Result.Ok(profile)
     }

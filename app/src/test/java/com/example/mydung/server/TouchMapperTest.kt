@@ -436,7 +436,8 @@ class TouchMapperTest {
     @Test
     fun damping_level2_halvesFirstDeltaThenAccumulates() {
         val engine = TouchPointerSet()
-        val m = TouchMapper(engine, layout.copy(dampX = 2, dampY = 2), 1000, 500)
+        // Build-11: thang 1..100, mức 12 <=> mức đầm engine 2.0 (alpha 0.5).
+        val m = TouchMapper(engine, layout.copy(dampX = 12, dampY = 12), 1000, 500)
         m.process(move(10, 0, 100), 100)
         // EMA alpha=0.5: delta mượt = 5 -> con trỏ (505, 250).
         assertEquals(0.505f, m.cursorRatio().first, 0.001f)
@@ -448,7 +449,8 @@ class TouchMapperTest {
     @Test
     fun damping_separateAxes() {
         val engine = TouchPointerSet()
-        val m = TouchMapper(engine, layout.copy(dampX = 1, dampY = 4), 1000, 500)
+        // Build-11: mức 34 <=> mức đầm engine 4.0 (alpha 0.25).
+        val m = TouchMapper(engine, layout.copy(dampX = 1, dampY = 34), 1000, 500)
         m.process(move(10, 8, 100), 100)
         // X không làm mượt (10), Y alpha=0.25 -> 2.
         val (rx, ry) = m.cursorRatio()
@@ -596,5 +598,58 @@ class TouchMapperTest {
         val down = m.process(key(LinuxKey.Q, true, 150), 150)
         assertEquals(1, down.size)
         assertPoint(down[0], 2, 500f, 250f)
+    }
+
+    // ── Build-11: giới hạn vùng con trỏ + bật/tắt chuột ──
+
+    @Test
+    fun cursorRegion_rightHalfClampsLeft() {
+        val engine = TouchPointerSet()
+        val m = TouchMapper(
+            engine,
+            layout.copy(cursorRegion = Config.CURSOR_REGION_RIGHT),
+            1000, 500,
+        )
+        // Con trỏ khởi đầu ở tâm (500, 250); kéo sang trái 100px thì bị kẹp
+        // ở biên giữa màn hình (x = 500).
+        m.process(move(-100, 0, 100), 100)
+        assertEquals(0.5f, m.cursorRatio().first, 0.001f)
+        // Kéo sang phải thì đi bình thường.
+        m.process(move(100, 0, 110), 110)
+        assertEquals(0.6f, m.cursorRatio().first, 0.001f)
+    }
+
+    @Test
+    fun cursorRegion_offAllowsFullScreen() {
+        val engine = TouchPointerSet()
+        val m = TouchMapper(
+            engine,
+            layout.copy(cursorRegion = Config.CURSOR_REGION_OFF),
+            1000, 500,
+        )
+        m.process(move(-100, 0, 100), 100)
+        assertEquals(0.4f, m.cursorRatio().first, 0.001f)
+    }
+
+    @Test
+    fun mouseDisabled_ignoresMovementButKeepsKeys() {
+        val (engine, m) = mapper()
+        m.mouseEnabled = false
+        assertTrue(m.process(move(10, 10, 100), 100).isEmpty())
+        val (rx, ry) = m.cursorRatio()
+        assertEquals(0.5f, rx, 0.001f)
+        assertEquals(0.5f, ry, 0.001f)
+        // Phím/nút vẫn tiêm bình thường khi chuột tắt.
+        val down = m.process(key(LinuxKey.SPACE, true, 110), 110)
+        assertEquals(1, down.size)
+        assertEquals(TouchEngine.ACTION_DOWN, down[0].action)
+        val p = down[0].pointers.single()
+        assertEquals(900f, p.x, 0.01f)
+        assertEquals(250f, p.y, 0.01f)
+        // Bật lại: chuột di chuyển bình thường.
+        m.mouseEnabled = true
+        m.process(move(10, 0, 120), 120)
+        assertEquals(0.51f, m.cursorRatio().first, 0.001f)
+        assertEquals(1, engine.count)
     }
 }

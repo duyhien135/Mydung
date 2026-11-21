@@ -10,6 +10,7 @@ import android.content.pm.ServiceInfo
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.Gravity
 import android.view.PointerIcon
@@ -40,6 +41,7 @@ import com.example.mydung.ui.CursorDot
 import com.example.mydung.ui.FloatingButton
 import com.example.mydung.ui.readRealDisplay
 import com.example.mydung.ui.sendProfileToServer
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -58,24 +60,25 @@ import kotlinx.coroutines.withContext
  * 2 chế độ:
  * - Chơi: nút nổi tròn chữ K (bấm = mở bảng điều khiển, giữ = mở trình
  *   sửa, kéo = di chuyển). Bảng điều khiển có bật/tắt keymap, chỉnh nút,
- *   đổi chế độ con trỏ ↔ nhìn tự do, cài đặt nhanh (độ nhạy X/Y, đầm tâm,
- *   tốc độ con trỏ, tần số quét chuột, kích thước con trỏ, trong suốt
- *   logo, phím ẩn/hiện lớp phủ), ẩn lớp phủ và mở app. Cửa sổ WRAP_CONTENT
+ *   đổi chế độ con trỏ ↔ nhìn tự do, cài đặt nhanh (tốc độ con trỏ, kích
+ *   thước con trỏ, trong suốt logo, phím ẩn/hiện lớp phủ — độ nhạy X/Y,
+ *   đầm tâm và tần số quét chuột đã chuyển sang bảng chỉnh camera trong
+ *   trình sửa từ build-11), ẩn lớp phủ và mở app. Cửa sổ WRAP_CONTENT
  *   khi bảng đóng nên vùng nhận chạm chỉ đúng bằng nút, phần còn lại của
  *   màn hình game vẫn chạm bình thường; bảng mở thì cửa sổ đổi sang
  *   MATCH_PARENT.
  * - Chỉnh: toàn màn hình, nhận chạm để kéo thả nút. Lưu xong quay về chế độ chơi.
  *
- * Ẩn/hiện lớp phủ (build-9): lớp phủ chỉ hiện khi (đang trong game) VÀ
- * (không bị ẩn thủ công). Đang trong game = app foreground là package của
- * 1 game đã thêm (ServerManager.fgPackageFlow; chưa có event FG nào thì
- * coi như trong game — giữ hành vi cũ). Ẩn thủ công = nút "Ẩn lớp phủ"
- * trong bảng nút K hoặc phím nóng (mặc định F10, Server chặn phím rồi báo
- * qua MAPSTATUS overlay=1|0); trạng thái lưu SharedPreferences để mở lại
- * app vẫn nhớ, quên phím thì bấm "Hiện lại lớp phủ" trong tab Cài đặt.
- * Rời game thì tạm ngừng inject (nhớ trạng thái MAP), quay lại thì khôi
- * phục; trình sửa đang mở thì lưu trước khi ẩn. Keymap vẫn chạy ngầm khi
- * lớp phủ bị ẩn thủ công (chỉ ẩn phần hiển thị).
+ * Ẩn/hiện lớp phủ (build-9; mặc định F1 từ build-11): lớp phủ chỉ hiện khi
+ * (đang trong game) VÀ (không bị ẩn thủ công). Đang trong game = app
+ * foreground là package của 1 game đã thêm (ServerManager.fgPackageFlow;
+ * chưa có event FG nào thì coi như trong game — giữ hành vi cũ). Ẩn thủ
+ * công = nút "Ẩn lớp phủ" trong bảng nút K hoặc phím nóng (Server chặn
+ * phím rồi báo qua MAPSTATUS overlay=1|0); trạng thái lưu SharedPreferences
+ * để mở lại app vẫn nhớ, quên phím thì bấm "Hiện lại lớp phủ" trong tab
+ * Cài đặt. Rời game thì tạm ngừng inject (nhớ trạng thái MAP), quay lại thì
+ * khôi phục; trình sửa đang mở thì lưu trước khi ẩn. Keymap vẫn chạy ngầm
+ * khi lớp phủ bị ẩn thủ công (chỉ ẩn phần hiển thị).
  *
  * Service là LifecycleOwner + SavedStateRegistryOwner cho ComposeView (Compose
  * cần cả 2 — thiếu SavedStateRegistryOwner thì rememberSaveable sẽ lỗi).
@@ -105,6 +108,12 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         // nên không spam socket + AUTH mỗi lần.
         private val CURSOR_REGEX = Regex("cursor=([0-9.]+),([0-9.]+)")
         private val OVERLAY_REGEX = Regex("overlay=(\\d)")
+        // Build-11: mouse=0/1 (chuột bật/tắt) + grab= tên strategy GRAB.
+        private val MOUSE_REGEX = Regex("mouse=(\\d)")
+        private val GRAB_REGEX = Regex("grab=([A-Za-z0-9_-]+)")
+        // Build-11: di chuyển tam giác con trỏ tối đa ~120 lần/giây (8ms)
+        // để đỡ gọi binder liên tục ở tần số quét cao (500Hz/NO LIMIT).
+        private const val CURSOR_DOT_MIN_MOVE_INTERVAL_MS = 8L
 
         // Vị trí nút nổi lưu theo TỈ LỆ màn hình (xoay màn hình không bị kẹt ngoài).
         private const val PREFS_APP = "keytouch_prefs"
@@ -167,6 +176,9 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
     /** Cửa sổ chấm con trỏ ảo (chỉ hiện ở chế độ con trỏ, không nhận chạm). */
     private var cursorView: View? = null
 
+    /** Lần di chuyển tam giác con trỏ gần nhất (throttle ~120Hz, xem updateCursorDot). */
+    private var lastDotMoveMs = 0L
+
     /** Cửa sổ ẩn con trỏ hệ thống (build-9): toàn màn hình, trong suốt,
      *  không nhận chạm, pointerIcon TYPE_NULL — chỉ hiện khi MAP bật (để
      *  con trỏ hệ thống không hiện cùng tam giác con trỏ ảo). */
@@ -190,7 +202,7 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
      *  có event FG nào thì true (giữ hành vi cũ: hiện bình thường). */
     val inGame = MutableStateFlow(true)
 
-    /** Lớp phủ có đang bị ẩn thủ công không (nút "Ẩn lớp phủ" / phím F10). */
+    /** Lớp phủ có đang bị ẩn thủ công không (nút "Ẩn lớp phủ" / phím ẩn/hiện lớp phủ). */
     val manualHidden = MutableStateFlow(false)
 
     /** Trạng thái MAP (poll mỗi 2s) cho chỉ báo chế độ chơi. */
@@ -202,22 +214,37 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
     /** Vị trí nút nổi (pixel, góc trên-trái cửa sổ) — bảng nổi dùng để neo vị trí. */
     val floatPosPx = MutableStateFlow(0 to 0)
 
-    /** Độ nhạy chuột X/Y của profile đang dùng — 2 thanh trượt trong bảng Cài đặt (build-9). */
-    val sensX = MutableStateFlow(Config.SENS_X)
-    val sensY = MutableStateFlow(Config.SENS_Y)
+    /** Độ nhạy chuột X/Y của profile đang dùng (thang 1..100, build-11) —
+     *  chỉnh trong bảng chỉnh camera (trình sửa). */
+    val sensX = MutableStateFlow(Config.SENS_UI_DEFAULT)
+    val sensY = MutableStateFlow(Config.SENS_UI_DEFAULT)
 
-    /** Đầm tâm X/Y (mức 1..10) của profile đang dùng — bảng Cài đặt (build-9). */
+    /** Đầm tâm X/Y (mức 1..100, build-11) của profile đang dùng — bảng chỉnh camera. */
     val dampX = MutableStateFlow(Config.DAMP_DEFAULT)
     val dampY = MutableStateFlow(Config.DAMP_DEFAULT)
 
     /** Tốc độ con trỏ ảo (0.5..3.0, lưu SharedPreferences) — bảng Cài đặt (build-9). */
     val cursorSpeed = MutableStateFlow(Config.CURSOR_SPEED_DEFAULT)
 
-    /** Tần số quét chuột (Hz, lưu SharedPreferences) — bảng Cài đặt (build-9). */
+    /** Tần số quét chuột (Hz, lưu SharedPreferences; 0 = NO LIMIT) — bảng chỉnh camera. */
     val pollRateHz = MutableStateFlow(Config.DEFAULT_POLL_RATE_HZ)
 
-    /** Phím ẩn/hiện lớp phủ của profile đang dùng (mặc định F10) — bảng Cài đặt (build-9). */
+    /** Phím ẩn/hiện lớp phủ của profile đang dùng (mặc định F1 từ build-11) — bảng Cài đặt. */
     val overlayToggleKey = MutableStateFlow(Config.OVERLAY_TOGGLE_KEY)
+
+    /** Giới hạn vùng con trỏ của profile đang dùng (0 = TẮT, 1 = TOÀN MÀN,
+     *  2 = MÀN PHẢI) — bảng chỉnh camera (build-11). */
+    val cursorRegion = MutableStateFlow(Config.CURSOR_REGION_DEFAULT)
+
+    /** Phím bật/tắt chuột của profile đang dùng (0 = chưa gán) — bảng chỉnh camera. */
+    val mouseToggleKey = MutableStateFlow(Config.MOUSE_TOGGLE_KEY_UNBOUND)
+
+    /** Chuột có đang bật không (đọc từ MAPSTATUS mouse=) — tắt thì ẩn tam giác con trỏ. */
+    val mouseOn = MutableStateFlow(true)
+
+    /** Cách GRAB đang dùng trên Server ("lc-mut", "none"...) — đọc từ
+     *  MAPSTATUS grab=, hiện ở bảng Cài đặt để chẩn đoán lỗi 2 con trỏ. */
+    val grabMethod = MutableStateFlow("none")
 
     /** Kích thước chấm con trỏ (dp) — thanh trượt trong bảng Cài đặt. */
     val cursorDotSizeDp = MutableStateFlow(CURSOR_DOT_DEFAULT_DP)
@@ -225,7 +252,9 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
     /** Độ trong suốt nền nút K (0.2..1) — thanh trượt trong bảng Cài đặt. */
     val floatAlpha = MutableStateFlow(FLOAT_DEFAULT_ALPHA)
 
-    /** Index phần tử đang chờ gán phím (null = không chờ; -1 = đang chờ gán phím ẩn/hiện lớp phủ). */
+    /** Index phần tử đang chờ gán phím (null = không chờ; -1 = đang chờ gán
+     *  phím ẩn/hiện lớp phủ; -2 = gán nhanh Tap tại khoảng trống; -3 = đang
+     *  chờ gán phím bật/tắt chuột). */
     val captureRequest = MutableStateFlow<Int?>(null)
 
     /** (index, mã phím) vừa bắt được — editor áp dụng rồi gọi clearCaptured(). */
@@ -357,12 +386,34 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
             runCatching {
                 val store = ProfileStore(ProfileStore.defaultFile(filesDir))
                 val state = store.load()
-                val updated = state.profiles.map { if (it.id == saved.id) saved else it }
-                val final = if (updated.any { it.id == saved.id }) updated else updated + saved
-                store.save(final, state.activeId ?: saved.id)
-                sendProfileToServer(this@OverlayService, saved)
+                val merged = mergeEditorSave(
+                    saved,
+                    state.profiles.firstOrNull { it.id == saved.id },
+                )
+                val updated = state.profiles.map { if (it.id == merged.id) merged else it }
+                val final = if (updated.any { it.id == merged.id }) updated else updated + merged
+                store.save(final, state.activeId ?: merged.id)
+                sendProfileToServer(this@OverlayService, merged)
             }
         }
+    }
+
+    /**
+     * Gộp profile trình sửa lưu: trình sửa chỉ sở hữu `elements` (vị trí /
+     * phím các nút); các cài đặt cấp profile (nhạy/đầm/phím/vùng con trỏ)
+     * lấy từ bản MỚI NHẤT trong file (có thể đã đổi trực tiếp trong lúc
+     * chỉnh qua bảng chỉnh camera) thay vì bản snapshot lúc mở trình sửa
+     * — không thì bấm Lưu trong trình sửa sẽ đè mất các chỉnh đó.
+     */
+    private fun mergeEditorSave(saved: Profile, stored: Profile?): Profile {
+        if (stored == null) return saved
+        return saved.copy(
+            sensX = stored.sensX, sensY = stored.sensY,
+            dampX = stored.dampX, dampY = stored.dampY,
+            overlayToggleKey = stored.overlayToggleKey,
+            cursorRegion = stored.cursorRegion,
+            mouseToggleKey = stored.mouseToggleKey,
+        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -461,6 +512,16 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         // Vị trí nút nổi + cài đặt của profile đang dùng (bảng nổi đọc).
         val pos = savedFloatPosition()
         floatPosPx.value = pos
+        loadActiveProfileFlows()
+        ensurePolling()
+        applyOverlayVisibility()
+    }
+
+    /** Nạp các flow cài đặt từ profile đang dùng (nhạy/đầm/phím/vùng con
+     *  trỏ) — gọi khi vào chế độ chơi VÀ khi mở trình sửa, để bảng chỉnh
+     *  camera luôn thấy giá trị mới nhất (kể cả khi vừa đổi ở tab Cấu
+     *  hình trong app). */
+    private fun loadActiveProfileFlows() {
         runCatching {
             val store = ProfileStore(ProfileStore.defaultFile(filesDir))
             val state = store.ensureDefault()
@@ -471,9 +532,9 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
             dampX.value = active.dampX
             dampY.value = active.dampY
             overlayToggleKey.value = active.overlayToggleKey
+            cursorRegion.value = active.cursorRegion
+            mouseToggleKey.value = active.mouseToggleKey
         }
-        ensurePolling()
-        applyOverlayVisibility()
     }
 
     /** Gắn cửa sổ nút nổi K (chỉ gọi khi lớp phủ được hiện). */
@@ -490,13 +551,9 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                 cursorMode = cursorMode,
                 buttonPosPx = floatPosPx,
                 logoAlpha = floatAlpha,
-                sensX = sensX,
-                sensY = sensY,
-                dampX = dampX,
-                dampY = dampY,
                 cursorSpeed = cursorSpeed,
-                pollRateHz = pollRateHz,
                 overlayToggleKey = overlayToggleKey,
+                grabMethod = grabMethod,
                 cursorDotSizeDp = cursorDotSizeDp,
                 captureRequest = captureRequest,
                 capturedKey = capturedKey,
@@ -505,12 +562,7 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                 onOpenEditor = { openEditor() },
                 onOpenApp = { openApp() },
                 onHideOverlay = { hideOverlayManually() },
-                onSensXChange = { v -> applySensX(v) },
-                onSensYChange = { v -> applySensY(v) },
-                onDampXChange = { v -> applyDampX(v) },
-                onDampYChange = { v -> applyDampY(v) },
                 onCursorSpeedChange = { v -> applyCursorSpeed(v) },
-                onPollRateChange = { hz -> setPollRate(hz) },
                 onOverlayKeyChange = { code -> applyOverlayKey(code) },
                 onRequestOverlayKeyCapture = { requestOverlayKeyCapture() },
                 onCancelCapture = { cancelKeyCapture() },
@@ -705,32 +757,115 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         }
     }
 
-    /** Độ nhạy X (ngang) — thanh trượt riêng trong bảng Cài đặt (build-9). */
-    private fun applySensX(value: Float) {
-        val v = value.coerceIn(0.1f, 5f)
+    /** Độ nhạy X (ngang, thang 1..100) — bảng chỉnh camera (build-11).
+     *  Lưu thang UI vào profile, gửi HỆ SỐ engine (= giá trị/20) cho Server. */
+    private fun applySensX(value: Int) {
+        val v = value.coerceIn(Config.SENS_UI_MIN, Config.SENS_UI_MAX)
         sensX.value = v
-        updateActiveProfileAndCfg({ it.copy(sensX = v) }, mapOf("sensX" to v))
+        updateActiveProfileAndCfg(
+            { it.copy(sensX = v) },
+            mapOf("sensX" to Config.sensFactor(v)),
+        )
     }
 
-    /** Độ nhạy Y (dọc) — thanh trượt riêng trong bảng Cài đặt (build-9). */
-    private fun applySensY(value: Float) {
-        val v = value.coerceIn(0.1f, 5f)
+    /** Độ nhạy Y (dọc, thang 1..100) — bảng chỉnh camera (build-11). */
+    private fun applySensY(value: Int) {
+        val v = value.coerceIn(Config.SENS_UI_MIN, Config.SENS_UI_MAX)
         sensY.value = v
-        updateActiveProfileAndCfg({ it.copy(sensY = v) }, mapOf("sensY" to v))
+        updateActiveProfileAndCfg(
+            { it.copy(sensY = v) },
+            mapOf("sensY" to Config.sensFactor(v)),
+        )
     }
 
-    /** Đầm tâm X (mức 1..10) — bảng Cài đặt (build-9). */
+    /** Đầm tâm X (mức 1..100) — bảng chỉnh camera (build-11). */
     private fun applyDampX(level: Int) {
         val v = level.coerceIn(Config.DAMP_MIN, Config.DAMP_MAX)
         dampX.value = v
         updateActiveProfileAndCfg({ it.copy(dampX = v) }, mapOf("dampX" to v.toFloat()))
     }
 
-    /** Đầm tâm Y (mức 1..10) — bảng Cài đặt (build-9). */
+    /** Đầm tâm Y (mức 1..100) — bảng chỉnh camera (build-11). */
     private fun applyDampY(level: Int) {
         val v = level.coerceIn(Config.DAMP_MIN, Config.DAMP_MAX)
         dampY.value = v
         updateActiveProfileAndCfg({ it.copy(dampY = v) }, mapOf("dampY" to v.toFloat()))
+    }
+
+    /** Giới hạn vùng con trỏ (0 = TẮT, 1 = TOÀN MÀN, 2 = MÀN PHẢI) — bảng chỉnh camera. */
+    private fun applyCursorRegion(region: Int) {
+        val v = region.coerceIn(Config.CURSOR_REGION_OFF, Config.CURSOR_REGION_RIGHT)
+        cursorRegion.value = v
+        updateActiveProfileAndCfg(
+            { it.copy(cursorRegion = v) },
+            mapOf("cursorRegion" to v.toFloat()),
+        )
+    }
+
+    /**
+     * Đổi phím bật/tắt chuột (build-11): lưu vào profile đang dùng + gửi
+     * TOUCHCFG mouseKey. Chặn phím chuột (Server chỉ chặn InputEvent.Key)
+     * và chặn trùng F8/F9/phím ẩn/hiện lớp phủ (đã dùng cho việc khác).
+     */
+    private fun applyMouseKey(code: Int) {
+        scope.launch(Dispatchers.IO) {
+            val isMouseButton = code == LinuxKey.BTN_LEFT || code == LinuxKey.BTN_RIGHT ||
+                code == LinuxKey.BTN_MIDDLE || code == LinuxKey.BTN_SIDE ||
+                code == LinuxKey.BTN_EXTRA
+            if (isMouseButton) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        this@OverlayService,
+                        "Phím bật/tắt chuột chỉ dùng phím bàn phím",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
+                return@launch
+            }
+            val store = ProfileStore(ProfileStore.defaultFile(filesDir))
+            val state = runCatching { store.load() }.getOrNull()
+            val active = state?.profiles?.firstOrNull { it.id == state.activeId }
+            if (active != null &&
+                (code == active.mapToggleKey || code == active.cursorToggleKey ||
+                    code == active.overlayToggleKey)
+            ) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        this@OverlayService,
+                        "Phím ${LinuxKey.name(code)} đã dùng cho bật/tắt MAP / đổi chế độ / ẩn lớp phủ",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
+                return@launch
+            }
+            mouseToggleKey.value = code
+            runCatching {
+                if (state != null && active != null) {
+                    val updated = state.profiles.map {
+                        if (it.id == active.id) it.copy(mouseToggleKey = code) else it
+                    }
+                    store.save(updated, state.activeId)
+                }
+            }
+            val c = ServerManager.getSavedConnection(this@OverlayService) ?: return@launch
+            runCatching {
+                InputClient.sendTouchCfg(c.first, c.second, mapOf("mouseKey" to code.toFloat()))
+            }
+        }
+    }
+
+    /** Bật/tắt chuột ngay (double-tap vòng camera trong trình sửa): gửi
+     *  lệnh MOUSE đảo trạng thái hiện tại; poll MAPSTATUS sẽ đồng bộ lại
+     *  flow mouseOn sau đó. */
+    private fun toggleMouse() {
+        scope.launch(Dispatchers.IO) {
+            val c = ServerManager.getSavedConnection(this@OverlayService) ?: return@launch
+            runCatching {
+                val resp = InputClient.setMouseEnabled(c.first, c.second, !mouseOn.value)
+                if (resp == "OK MOUSE 1") mouseOn.value = true
+                else if (resp == "OK MOUSE 0") mouseOn.value = false
+            }
+        }
     }
 
     /** Tốc độ con trỏ ảo (0.5..3.0, lưu SharedPreferences) — bảng Cài đặt (build-9). */
@@ -746,9 +881,11 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         }
     }
 
-    /** Tần số quét chuột (125/250/500/1000 Hz, lưu SharedPreferences) — bảng Cài đặt (build-9). */
+    /** Tần số quét chuột (60/125/250/500/1000 Hz + NO LIMIT = 0, lưu
+     *  SharedPreferences) — bảng chỉnh camera (build-11). */
     private fun setPollRate(hz: Int) {
-        val v = if (hz in Config.POLL_RATES) hz else Config.DEFAULT_POLL_RATE_HZ
+        val v = if (hz == Config.POLL_RATE_NO_LIMIT || hz in Config.POLL_RATES) hz
+        else Config.DEFAULT_POLL_RATE_HZ
         pollRateHz.value = v
         KeyTouchPrefs.setPollRateHz(this, v)
         scope.launch(Dispatchers.IO) {
@@ -809,8 +946,9 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
     }
 
     /** Ẩn lớp phủ thủ công (nút trong bảng nút K): ẩn toàn bộ cửa sổ nhưng
-     *  keymap vẫn chạy ngầm. Hiện lại bằng phím nóng (F10) hoặc nút "Hiện
-     *  lại lớp phủ" trong tab Cài đặt. */
+     *  keymap vẫn chạy ngầm. Hiện lại bằng phím ẩn/hiện lớp phủ (mặc định
+     *  F1, gán được trong bảng Cài đặt) hoặc nút "Hiện lại lớp phủ" trong
+     *  tab Cài đặt. */
     private fun hideOverlayManually() {
         manualHidden.value = true
         KeyTouchPrefs.setOverlayHidden(this, true)
@@ -852,6 +990,7 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         removeOverlayViews()
         editing = true
         editorElements.value = editingProfile?.elements
+        loadActiveProfileFlows()
         ensurePolling()
         applyOverlayVisibility()
     }
@@ -875,6 +1014,26 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                 onClearCaptured = { capturedKey.value = null },
                 onCancelCapture = { cancelKeyCapture() },
                 onElementsChange = { editorElements.value = it },
+                // Build-11: cài đặt cho bảng chỉnh camera (nhạy/đầm/poll/
+                // vùng con trỏ/phím chuột) + trạng thái chuột.
+                sensX = sensX,
+                sensY = sensY,
+                dampX = dampX,
+                dampY = dampY,
+                pollRateHz = pollRateHz,
+                cursorRegion = cursorRegion,
+                mouseToggleKey = mouseToggleKey,
+                mouseOn = mouseOn,
+                overlayToggleKey = overlayToggleKey,
+                onSensXChange = { v -> applySensX(v) },
+                onSensYChange = { v -> applySensY(v) },
+                onDampXChange = { v -> applyDampX(v) },
+                onDampYChange = { v -> applyDampY(v) },
+                onPollRateChange = { hz -> setPollRate(hz) },
+                onCursorRegionChange = { r -> applyCursorRegion(r) },
+                onMouseToggleKeyChange = { code -> applyMouseKey(code) },
+                onRequestMouseKeyCapture = { requestMouseKeyCapture() },
+                onToggleMouse = { toggleMouse() },
             )
         }
         val params = WindowManager.LayoutParams(
@@ -896,7 +1055,7 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
     }
 
     /** Bắt đầu thăm dò MAPSTATUS nếu chưa chạy (giữ chạy cả khi lớp phủ ẩn
-     *  để phím nóng F10 vẫn đổi được trạng thái ẩn/hiện). */
+     *  để phím ẩn/hiện lớp phủ vẫn đổi được trạng thái ẩn/hiện). */
     private fun ensurePolling() {
         if (pollJob?.isActive == true) return
         pollMapStatus()
@@ -933,64 +1092,109 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
             var pollerKey: Pair<Int, String>? = null
             try {
                 while (true) {
-                    var cursorMode = false
-                    val c = ServerManager.getSavedConnection(this@OverlayService)
-                    if (c != null) {
-                        if (poller == null || pollerKey != c) {
-                            poller?.close()
-                            poller = InputClient.StatusPoller(c.first, c.second)
-                            pollerKey = c
+                    // Build-11: mỗi vòng lặp bọc try/catch riêng — lỗi bất
+                    // ngờ trong 1 vòng (vd addView ném ngoại lệ) không được
+                    // giết chết vòng poll vĩnh viễn (trước đây vòng poll
+                    // chết thì tam giác con trỏ đứng im + phím ẩn/hiện lớp
+                    // phủ không còn tác dụng cho tới khi mở lại lớp phủ).
+                    // CancellationException thì ném lại để hủy job bình thường.
+                    try {
+                        pollOnce(poller, pollerKey) { newPoller, newKey ->
+                            poller = newPoller
+                            pollerKey = newKey
                         }
-                        try {
-                            val resp = poller.poll()
-                            if (resp != null) {
-                                mapOn.value = Regex("map=(\\d)").find(resp)?.groupValues?.get(1) == "1"
-                                cursorMode = resp.contains("mode=cursor")
-                                // Build-9: phím nóng F10 đổi trạng thái ẩn lớp
-                                // phủ trên Server — app đọc overlay= rồi tự
-                                // ẩn/hiện các cửa sổ + lưu lại để nhớ.
-                                val overlayHidden =
-                                    OVERLAY_REGEX.find(resp)?.groupValues?.get(1) == "1"
-                                if (overlayHidden != manualHidden.value) {
-                                    manualHidden.value = overlayHidden
-                                    KeyTouchPrefs.setOverlayHidden(
-                                        this@OverlayService, overlayHidden,
-                                    )
-                                    withContext(Dispatchers.Main) { applyOverlayVisibility() }
-                                }
-                                if (cursorMode) {
-                                    val m = CURSOR_REGEX.find(resp)
-                                    val rx = m?.groupValues?.get(1)?.toFloatOrNull()
-                                    val ry = m?.groupValues?.get(2)?.toFloatOrNull()
-                                    if (rx != null && ry != null) {
-                                        withContext(Dispatchers.Main) { updateCursorDot(rx, ry) }
-                                    }
-                                }
-                            } else {
-                                mapOn.value = false
-                            }
-                        } catch (_: Exception) {
-                            mapOn.value = false
-                        }
-                    } else {
-                        mapOn.value = false
-                        poller?.close()
-                        poller = null
-                        pollerKey = null
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        delay(500)
                     }
-                    this@OverlayService.cursorMode.value = cursorMode
-                    if (!cursorMode) {
-                        withContext(Dispatchers.Main) { hideCursorDot() }
-                    }
-                    // Chế độ con trỏ thì thăm dò theo tần số quét chuột
-                    // (mặc định 500Hz -> 2ms) để tam giác con trỏ mượt;
-                    // không thì 2s như trước (chỉ để cập nhật trạng thái MAP).
-                    delay(if (cursorMode) Config.pollIntervalMs(pollRateHz.value) else POLL_MAP_MS)
                 }
             } finally {
                 poller?.close()
             }
         }
+    }
+
+    /** 1 vòng thăm dò MAPSTATUS (tách ra để pollMapStatus bọc try/catch
+     *  từng vòng). Trả về poller/key mới qua [onPollerChange] khi đổi kết nối. */
+    private suspend fun pollOnce(
+        pollerIn: InputClient.StatusPoller?,
+        pollerKeyIn: Pair<Int, String>?,
+        onPollerChange: (InputClient.StatusPoller?, Pair<Int, String>?) -> Unit,
+    ) {
+        var poller = pollerIn
+        var pollerKey = pollerKeyIn
+        var cursorMode = false
+        var mapIsOn = false
+        var mouseIsOn = true
+        val c = ServerManager.getSavedConnection(this@OverlayService)
+        if (c != null) {
+            if (poller == null || pollerKey != c) {
+                poller?.close()
+                poller = InputClient.StatusPoller(c.first, c.second)
+                pollerKey = c
+                onPollerChange(poller, pollerKey)
+            }
+            try {
+                val resp = poller.poll()
+                if (resp != null) {
+                    mapIsOn = Regex("map=(\\d)").find(resp)?.groupValues?.get(1) == "1"
+                    mapOn.value = mapIsOn
+                    cursorMode = resp.contains("mode=cursor")
+                    // Build-11: mouse= (chuột bật/tắt) + grab= (cách GRAB
+                    // đang dùng — chẩn đoán lỗi 2 con trỏ).
+                    mouseIsOn = MOUSE_REGEX.find(resp)?.groupValues?.get(1) != "0"
+                    mouseOn.value = mouseIsOn
+                    GRAB_REGEX.find(resp)?.groupValues?.get(1)?.let {
+                        if (it.isNotBlank()) grabMethod.value = it
+                    }
+                    // Build-9: phím ẩn/hiện lớp phủ đổi trạng thái ẩn lớp
+                    // phủ trên Server — app đọc overlay= rồi tự ẩn/hiện
+                    // các cửa sổ + lưu lại để nhớ.
+                    val overlayHidden =
+                        OVERLAY_REGEX.find(resp)?.groupValues?.get(1) == "1"
+                    if (overlayHidden != manualHidden.value) {
+                        manualHidden.value = overlayHidden
+                        KeyTouchPrefs.setOverlayHidden(
+                            this@OverlayService, overlayHidden,
+                        )
+                        withContext(Dispatchers.Main) { applyOverlayVisibility() }
+                    }
+                    if (cursorMode && mapIsOn && mouseIsOn) {
+                        val m = CURSOR_REGEX.find(resp)
+                        val rx = m?.groupValues?.get(1)?.toFloatOrNull()
+                        val ry = m?.groupValues?.get(2)?.toFloatOrNull()
+                        if (rx != null && ry != null) {
+                            withContext(Dispatchers.Main) { updateCursorDot(rx, ry) }
+                        }
+                    }
+                } else {
+                    mapOn.value = false
+                }
+            } catch (_: Exception) {
+                mapOn.value = false
+            }
+        } else {
+            mapOn.value = false
+            poller?.close()
+            poller = null
+            pollerKey = null
+            onPollerChange(null, null)
+        }
+        this@OverlayService.cursorMode.value = cursorMode
+        // Build-11: chỉ hiện tam giác khi đủ 3 điều kiện (chế độ con trỏ +
+        // MAP bật + chuột bật). Trước đây chỉ kiểm tra chế độ con trỏ nên
+        // MAP tắt vẫn hiện tam giác đứng im ở vị trí khởi tạo (Server bỏ
+        // mọi sự kiện chuột khi MAP tắt nên vị trí không bao giờ đổi) —
+        // đúng lỗi người dùng báo ở build-10.
+        if (!cursorMode || !mapIsOn || !mouseIsOn) {
+            withContext(Dispatchers.Main) { hideCursorDot() }
+        }
+        // Chế độ con trỏ thì thăm dò theo tần số quét chuột (mặc định
+        // 500Hz -> 2ms) để tam giác con trỏ mượt; không thì 2s như trước
+        // (chỉ để cập nhật trạng thái MAP). NO LIMIT thì pollDelayMs cho
+        // tối thiểu 1ms để không quay chặt.
+        delay(if (cursorMode) Config.pollDelayMs(pollRateHz.value) else POLL_MAP_MS)
     }
 
     /** Hiện/di chuyển tam giác con trỏ ảo tới vị trí tỉ lệ (rx, ry). Chạy trên luồng chính. */
@@ -1039,8 +1243,13 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
             }
         } else {
             val params = view.layoutParams as? WindowManager.LayoutParams ?: return
-            // Chỉ cập nhật khi di chuyển đủ xa để đỡ gọi binder liên tục.
+            // Chỉ cập nhật khi di chuyển đủ xa VÀ đủ thời gian từ lần trước
+            // (tối đa ~120 lần/giây) để đỡ gọi binder liên tục ở tần số
+            // quét cao (500Hz/NO LIMIT thăm dò mỗi 1-2ms).
             if (kotlin.math.abs(params.x - x) < 2 && kotlin.math.abs(params.y - y) < 2) return
+            val now = SystemClock.uptimeMillis()
+            if (now - lastDotMoveMs < CURSOR_DOT_MIN_MOVE_INTERVAL_MS) return
+            lastDotMoveMs = now
             params.x = x
             params.y = y
             try {
@@ -1162,6 +1371,20 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         requestKeyCapture(-1)
     }
 
+    /**
+     * Bắt phím bật/tắt chuột (bảng chỉnh camera): index -3 = phím chuột
+     * (EditorOverlay đọc capturedKey.first == -3 rồi gọi
+     * onMouseToggleKeyChange).
+     */
+    fun requestMouseKeyCapture() {
+        requestKeyCapture(-3)
+    }
+
+    /** Bắt phím cho nút Tap mới tại khoảng trống (index -2, xem EditorOverlay). */
+    fun requestQuickTapCapture() {
+        requestKeyCapture(-2)
+    }
+
     /** Lưu profile đã chỉnh, gửi cho Server, quay về lớp phủ chơi. */
     private fun saveAndReturnToPlay(saved: Profile) {
         cancelKeyCapture()
@@ -1169,10 +1392,14 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         scope.launch(Dispatchers.IO) {
             val store = ProfileStore(ProfileStore.defaultFile(filesDir))
             val state = store.load()
-            val updated = state.profiles.map { if (it.id == saved.id) saved else it }
-            val final = if (updated.any { it.id == saved.id }) updated else updated + saved
-            store.save(final, state.activeId ?: saved.id)
-            sendProfileToServer(this@OverlayService, saved)
+            val merged = mergeEditorSave(
+                saved,
+                state.profiles.firstOrNull { it.id == saved.id },
+            )
+            val updated = state.profiles.map { if (it.id == merged.id) merged else it }
+            val final = if (updated.any { it.id == merged.id }) updated else updated + merged
+            store.save(final, state.activeId ?: merged.id)
+            sendProfileToServer(this@OverlayService, merged)
             scope.launch(Dispatchers.Main) { showPlayOverlay() }
         }
     }

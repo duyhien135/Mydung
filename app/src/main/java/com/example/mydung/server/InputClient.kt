@@ -77,9 +77,15 @@ object InputClient {
         return command(port, token, "CURSORMODE ${if (on) 1 else 0}")
     }
 
-    /** Đặt tần số quét chuột (build-9: 125/250/500/1000 Hz). Trả "OK POLLRATE <hz>". */
+    /** Đặt tần số quét chuột (build-9: 125/250/500/1000 Hz; build-11 thêm
+     *  60 Hz và NO LIMIT = 0). Trả "OK POLLRATE <hz>". */
     fun setPollRate(port: Int, token: String, hz: Int): String {
         return command(port, token, "POLLRATE $hz")
+    }
+
+    /** Bật/tắt chuột (build-11). Trả "OK MOUSE 1|0". */
+    fun setMouseEnabled(port: Int, token: String, on: Boolean): String {
+        return command(port, token, "MOUSE ${if (on) 1 else 0}")
     }
 
     /** Đặt trạng thái ẩn lớp phủ (build-9). Trả "OK OVERLAY 1|0". */

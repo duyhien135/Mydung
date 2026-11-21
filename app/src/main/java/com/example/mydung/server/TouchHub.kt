@@ -58,9 +58,10 @@ object TouchHub {
         private set
 
     /**
-     * Lớp phủ có đang bị ẩn thủ công không (build-9): phím F10 đổi cờ này,
-     * app đọc qua MAPSTATUS (overlay=1|0) rồi tự ẩn/hiện các cửa sổ.
-     * Keymap vẫn chạy ngầm bình thường khi ẩn.
+     * Lớp phủ có đang bị ẩn thủ công không (build-9): phím ẩn/hiện lớp phủ
+     * (mặc định F1 từ build-11) đổi cờ này, app đọc qua MAPSTATUS
+     * (overlay=1|0) rồi tự ẩn/hiện các cửa sổ. Keymap vẫn chạy ngầm
+     * bình thường khi ẩn.
      */
     @Volatile
     var overlayHidden = false
@@ -103,11 +104,20 @@ object TouchHub {
             if (res.startsWith("ERR")) Server.log("CURSOR: bấm ${LinuxKey.name(e.code)} nhưng $res")
             return@Listener
         }
-        // Build-9: phím nóng ẩn/hiện lớp phủ (mặc định F10). Đổi cờ, app đọc
-        // qua MAPSTATUS (overlay=1|0) rồi tự ẩn/hiện các cửa sổ. Kiểm tra
-        // sau F8/F9: trùng phím thì phím ưu tiên cao hơn thắng.
+        // Build-9: phím nóng ẩn/hiện lớp phủ (mặc định F1 từ build-11).
+        // Đổi cờ, app đọc qua MAPSTATUS (overlay=1|0) rồi tự ẩn/hiện các
+        // cửa sổ. Kiểm tra sau F8/F9: trùng phím thì phím ưu tiên cao hơn thắng.
         if (e is InputEvent.Key && e.pressed && e.code == mapper.layout.overlayToggleKey) {
             setOverlayHidden(!overlayHidden)
+            return@Listener
+        }
+        // Build-11: phím bật/tắt chuột (mặc định chưa gán = 0). Tắt thì
+        // chuột không di chuyển con trỏ / không xoay camera nữa (phím/nút
+        // vẫn tiêm bình thường); bật lại thì dùng như cũ. Kiểm tra sau
+        // phím lớp phủ: trùng phím thì phím lớp phủ thắng.
+        val mouseKey = mapper.layout.mouseToggleKey
+        if (e is InputEvent.Key && e.pressed && mouseKey != 0 && e.code == mouseKey) {
+            setMouseEnabled(!mapper.mouseEnabled)
             return@Listener
         }
         // Build-9: phím Xoay tự do (FREE_LOOK): bấm để đổi chế độ con trỏ
@@ -265,8 +275,8 @@ object TouchHub {
 
     /**
      * Đặt trạng thái ẩn lớp phủ (build-9): lệnh OVERLAY từ app hoặc phím
-     * nóng F10. Chỉ đổi cờ + ghi log — app tự ẩn/hiện các cửa sổ khi đọc
-     * MAPSTATUS. Keymap vẫn chạy ngầm, không ảnh hưởng MAP.
+     * nóng ẩn/hiện lớp phủ. Chỉ đổi cờ + ghi log — app tự ẩn/hiện các cửa
+     * sổ khi đọc MAPSTATUS. Keymap vẫn chạy ngầm, không ảnh hưởng MAP.
      */
     fun setOverlayHidden(hidden: Boolean): String {
         overlayHidden = hidden
@@ -275,11 +285,30 @@ object TouchHub {
     }
 
     /**
-     * Đặt tần số quét chuột (build-9): chu kỳ gộp MOVE tiêm = 1000/hz ms
-     * (125Hz->8ms, 250Hz->4ms, 500Hz->2ms, 1000Hz->1ms). Đây là tốc độ xử
-     * lý nội bộ của app, KHÔNG phải polling rate phần cứng của chuột USB.
+     * Bật/tắt chuột (build-11): lệnh MOUSE từ app, phím bật/tắt chuột,
+     * hoặc double-tap vòng camera trong trình sửa. Tắt thì di chuyển chuột
+     * bị bỏ (con trỏ đứng yên, camera không xoay); phím/nút vẫn tiêm bình
+     * thường. App đọc mouse= trong MAPSTATUS để ẩn/hiện tam giác con trỏ.
+     */
+    fun setMouseEnabled(on: Boolean): String {
+        mapper.mouseEnabled = on
+        Server.log(if (on) "Chuột: đã bật." else "Chuột: đã tắt (di chuyển bị bỏ, phím/nút vẫn chạy).")
+        return "OK MOUSE ${if (on) 1 else 0}"
+    }
+
+    /**
+     * Đặt tần số quét chuột (build-9; build-11 thêm 60Hz + NO LIMIT):
+     * chu kỳ gộp MOVE tiêm = 1000/hz ms (60Hz->16ms, 125Hz->8ms,
+     * 250Hz->4ms, 500Hz->2ms, 1000Hz->1ms, NO LIMIT->0ms = tiêm ngay
+     * mỗi sự kiện). Đây là tốc độ xử lý nội bộ của app, KHÔNG phải
+     * polling rate phần cứng của chuột USB.
      */
     fun setPollRate(hz: Int): String {
+        if (hz == Config.POLL_RATE_NO_LIMIT) {
+            moveIntervalMs = 0L
+            Server.log("Tần số quét chuột: NO LIMIT (không gộp MOVE, tiêm ngay mỗi sự kiện).")
+            return "OK POLLRATE 0"
+        }
         val clamped = hz.coerceIn(Config.POLL_RATES.first(), Config.POLL_RATES.last())
         moveIntervalMs = Config.pollIntervalMs(clamped)
         Server.log("Tần số quét chuột: $clamped Hz (chu kỳ xử lý ${moveIntervalMs}ms).")
@@ -338,8 +367,10 @@ object TouchHub {
             var l = mapper.layout
             for ((k, v) in values) {
                 l = when (k) {
-                    "sensX" -> l.copy(sensX = v.coerceIn(0.1f, 5f))
-                    "sensY" -> l.copy(sensY = v.coerceIn(0.1f, 5f))
+                    // Build-11: app gửi HỆ SỐ engine (đã đổi từ thang UI
+                    // 1..100 bằng Config.sensFactor): 0.05..5.0.
+                    "sensX" -> l.copy(sensX = v.coerceIn(0.05f, 5f))
+                    "sensY" -> l.copy(sensY = v.coerceIn(0.05f, 5f))
                     "joyX" -> l.copy(joyX = v.coerceIn(0f, 1f))
                     "joyY" -> l.copy(joyY = v.coerceIn(0f, 1f))
                     "joyR" -> l.copy(joyR = v.coerceIn(0.01f, 0.5f))
@@ -347,14 +378,22 @@ object TouchHub {
                     "camY" -> l.copy(camY = v.coerceIn(0f, 1f))
                     "camHW" -> l.copy(camHW = v.coerceIn(0.05f, 0.5f))
                     "camHH" -> l.copy(camHH = v.coerceIn(0.05f, 0.5f))
-                    // Build-9: đầm tâm X/Y (mức 1..10), tốc độ con trỏ
-                    // (0.5..3.0), phím ẩn/hiện lớp phủ (mã Linux).
+                    // Build-9: đầm tâm X/Y (build-11: mức 1..100), tốc độ
+                    // con trỏ (0.5..3.0), phím ẩn/hiện lớp phủ (mã Linux).
+                    // Build-11: giới hạn vùng con trỏ (0..2), phím bật/tắt
+                    // chuột (mã Linux, 0 = chưa gán).
                     "dampX" -> l.copy(dampX = v.toInt().coerceIn(Config.DAMP_MIN, Config.DAMP_MAX))
                     "dampY" -> l.copy(dampY = v.toInt().coerceIn(Config.DAMP_MIN, Config.DAMP_MAX))
                     "cursorSpeed" -> l.copy(
                         cursorSpeed = v.coerceIn(Config.CURSOR_SPEED_MIN, Config.CURSOR_SPEED_MAX),
                     )
                     "overlayKey" -> l.copy(overlayToggleKey = v.toInt())
+                    "cursorRegion" -> l.copy(
+                        cursorRegion = v.toInt().coerceIn(
+                            Config.CURSOR_REGION_OFF, Config.CURSOR_REGION_RIGHT,
+                        ),
+                    )
+                    "mouseKey" -> l.copy(mouseToggleKey = v.toInt())
                     else -> l
                 }
             }
@@ -383,6 +422,11 @@ object TouchHub {
             mode = if (cursorMode) "cursor" else "camera",
             cursorX = cursor.first, cursorY = cursor.second,
             overlayHidden = overlayHidden,
+            // Build-11: mouse= để app ẩn/hiện tam giác con trỏ khi chuột
+            // bị tắt; grab= để app hiện cách GRAB đang dùng (chẩn đoán
+            // lỗi 2 con trỏ trên máy thật: "none" = chưa grab được).
+            mouseEnabled = mapper.mouseEnabled,
+            grabMethod = Grabber.strategyName,
         )
     }
 

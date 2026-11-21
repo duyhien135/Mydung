@@ -41,10 +41,17 @@ android {
         applicationId = "com.example.mydung"
         minSdk = 30
         targetSdk = 37
-        versionCode = 5
-        versionName = "1.2.0"
+        versionCode = 6
+        versionName = "1.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // Build-11 (rút gọn APK theo Claude soi): chỉ đóng gói native lib
+        // arm64-v8a — cả 2 máy người dùng (Redmi Turbo 4, Y700) đều arm64,
+        // bỏ 3 ABI còn lại của Conscrypt (~6-9MB).
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
 
         // UserService Shizuku: version PHẢI đổi mỗi build (lấy giờ build)
         // để Shizuku server không dùng lại bản ghi service cũ — versionCode
@@ -54,23 +61,28 @@ android {
         buildConfigField("long", "USER_SERVICE_VERSION", "${System.currentTimeMillis()}L")
     }
 
+    // Build-11 (rút gọn APK theo Claude soi): chỉ giữ chuỗi tài nguyên
+    // tiếng Việt + tiếng Anh (bỏ ~80 locale khác trong các thư viện).
+    androidResources {
+        localeFilters += setOf("vi", "en")
+    }
+
     buildTypes {
         release {
+            // Ký release bằng key DEBUG cố định để cài đè được lên bản debug
+            // cũ (cùng keystore với mọi bản trước).
+            signingConfig = signingConfigs.getByName("debug")
+            // R8 thu nhỏ toàn bộ (build-11: BỎ packageScope hẹp trước đây
+            // chỉ gồm androidx/kotlin — để R8 cắt cả BouncyCastle /
+            // Conscrypt / libadb / Compose, là phần to nhất của APK).
             optimization {
                 enable = true
-                packageScope = setOf("androidx.**", "kotlin.**", "kotlinx.**")
             }
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
+            // AGP 9.3+: KHÔNG dùng proguardFiles nữa — keep rule nằm trong
+            // src/main/keepRules/*.keep (xem keepRules/rules.keep).
         }
         debug {
             signingConfig = signingConfigs.getByName("debug")
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
         }
     }
     compileOptions {
@@ -94,7 +106,8 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)
-    implementation(libs.androidx.compose.ui.tooling.preview)
+    // Build-11: BỎ ui.tooling.preview + debugImplementation ui.tooling
+    // (repo không có @Preview nào) và ui.test.manifest (không có androidTest).
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
 
@@ -115,6 +128,4 @@ dependencies {
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
-    debugImplementation(libs.androidx.compose.ui.test.manifest)
-    debugImplementation(libs.androidx.compose.ui.tooling)
 }

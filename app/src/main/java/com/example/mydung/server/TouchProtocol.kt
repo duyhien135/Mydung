@@ -60,12 +60,24 @@ object TouchProtocol {
         }
     }
 
-    /** Parse "POLLRATE <hz>" (build-9: 125/250/500/1000). Sai -> null. */
+    /** Parse "POLLRATE <hz>" (build-9: 125/250/500/1000; build-11 thêm 60
+     *  và NO LIMIT = 0). Sai -> null. */
     fun parsePollRate(line: String): Int? {
         val p = line.trim().split("\\s+".toRegex())
         if (p.size != 2 || p[0] != "POLLRATE") return null
         val hz = p[1].toIntOrNull() ?: return null
-        return if (hz in Config.POLL_RATES) hz else null
+        return if (hz == Config.POLL_RATE_NO_LIMIT || hz in Config.POLL_RATES) hz else null
+    }
+
+    /** Parse "MOUSE 1|0" (build-11: bật/tắt chuột). Sai -> null. */
+    fun parseMouse(line: String): Boolean? {
+        val p = line.trim().split("\\s+".toRegex())
+        if (p.size != 2 || p[0] != "MOUSE") return null
+        return when (p[1]) {
+            "1" -> true
+            "0" -> false
+            else -> null
+        }
     }
 
     /** Parse "OVERLAY 1|0" (build-9: app đặt trạng thái ẩn lớp phủ). Sai -> null. */
@@ -84,6 +96,8 @@ object TouchProtocol {
         "sensX", "sensY", "joyX", "joyY", "joyR", "camX", "camY", "camHW", "camHH",
         // Build-9: đầm tâm X/Y, tốc độ con trỏ, phím ẩn/hiện lớp phủ.
         "dampX", "dampY", "cursorSpeed", "overlayKey",
+        // Build-11: giới hạn vùng con trỏ, phím bật/tắt chuột.
+        "cursorRegion", "mouseKey",
     )
 
     /**
@@ -151,7 +165,10 @@ object TouchProtocol {
     /** Dòng trạng thái MAP trả về cho lệnh MAPSTATUS.
      *  mode: "camera" (nhìn tự do) hoặc "cursor" (con trỏ ảo); cursorX/Y là
      *  vị trí con trỏ theo tỉ lệ màn hình (app vẽ chấm con trỏ khi mode=cursor);
-     *  overlay=1: lớp phủ đang bị ẩn thủ công (keymap vẫn chạy ngầm). */
+     *  overlay=1: lớp phủ đang bị ẩn thủ công (keymap vẫn chạy ngầm).
+     *  Build-11: mouse=0 khi chuột bị tắt (app ẩn tam giác con trỏ);
+     *  grab= tên strategy GRAB đang dùng ("lc-mut", "none"... — "none"
+     *  nghĩa là chưa grab được, con trỏ hệ thống vẫn hiện). */
     fun formatMapStatus(
         mapOn: Boolean, display: DisplayInfo?, pointers: Int,
         latencyMs: Long, injectErr: Long, injectOk: Boolean,
@@ -159,6 +176,8 @@ object TouchProtocol {
         mode: String = "camera",
         cursorX: Float = 0.5f, cursorY: Float = 0.5f,
         overlayHidden: Boolean = false,
+        mouseEnabled: Boolean = true,
+        grabMethod: String = "none",
     ): String {
         val d = display?.let { "${it.width}x${it.height}" } ?: "none"
         // Locale.US: dấu thập phân luôn là "." (locale vi dùng "," sẽ làm hỏng parse).
@@ -166,6 +185,7 @@ object TouchProtocol {
         val cy = String.format(Locale.US, "%.2f", cursorY)
         return "MAP map=${if (mapOn) 1 else 0} display=$d pointers=$pointers " +
             "latencyMs=$latencyMs injectErr=$injectErr injectOk=${if (injectOk) 1 else 0} " +
-            "injector=$injector mode=$mode cursor=$cx,$cy overlay=${if (overlayHidden) 1 else 0}"
+            "injector=$injector mode=$mode cursor=$cx,$cy overlay=${if (overlayHidden) 1 else 0} " +
+            "mouse=${if (mouseEnabled) 1 else 0} grab=$grabMethod"
     }
 }

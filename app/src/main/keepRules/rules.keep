@@ -1,14 +1,30 @@
+# Keep rule cho R8 (AGP 9.3+ đọc từ src/main/keepRules/*.keep — KHÔNG dùng
+# proguard-rules.pro nữa; file đó đã xóa ở build-11).
+#
 # GĐ2/GĐ3: Server chạy qua app_process bằng tên lớp đầy đủ, R8 không được
 # đổi tên hay xóa lớp/hàm trong package server.
 -keep class com.example.mydung.server.** { *; }
 -keepclassmembers class com.example.mydung.server.** { *; }
-#
-# For more details, see
-#   https://d.android.com/r/tools/r8/keep-rules
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# Shizuku UserService: Shizuku server tạo instance bằng reflection theo tên
+# class + constructor không tham số. Đổi tên class hoặc xóa constructor là
+# bind thất bại (server im lặng xóa record sau 30s).
+-keep class com.example.mydung.shizuku.ShellService { public <init>(); public <methods>; }
+-keep class com.example.mydung.shizuku.IShellService { *; }
+-keep class com.example.mydung.shizuku.IShellService$* { *; }
+-keep class rikka.shizuku.** { *; }
+-keep class moe.shizuku.** { *; }
+
+# Conscrypt: native + provider đăng ký bằng reflection, R8 không được cắt.
+-keep class org.conscrypt.** { *; }
+-dontwarn org.conscrypt.**
+-dontwarn org.openjsse.**
+
+# libadb (MuntashirAkon): API dùng qua tên lớp đầy đủ.
+-keep class io.github.muntashirakon.adb.** { *; }
+
+# BouncyCastle: để R8 tự cắt phần không dùng, chỉ tắt cảnh báo (không keep
+# nguyên bản — đó là phần to nhất cần thu nhỏ). javax.naming chỉ dùng lúc
+# build, không có trên Android.
+-dontwarn org.bouncycastle.**
+-dontwarn javax.naming.**

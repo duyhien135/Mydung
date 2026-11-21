@@ -44,12 +44,14 @@ class ProfileCodecTest {
 
     @Test
     fun outOfRangeValues_clamped() {
+        // JSON không có "version" -> coi là v1 -> migrate: sens 99 -> 100,
+        // sens -1 -> 1 (thang 1..100 build-11).
         val p = ok(
             """{"name":"X","sensX":99,"sensY":-1,"toggleKey":66,
                "elements":[{"type":"BUTTON","x":1.5,"y":-0.2,"size":9,"key":57,"name":"N"}]}""",
         )
-        assertEquals(5f, p.sensX, 0.001f)
-        assertEquals(0.1f, p.sensY, 0.001f)
+        assertEquals(100, p.sensX)
+        assertEquals(1, p.sensY)
         val e = p.elements.single()
         assertEquals(1f, e.x, 0.001f)
         assertEquals(0f, e.y, 0.001f)
@@ -60,8 +62,8 @@ class ProfileCodecTest {
     fun missingFields_useDefaults() {
         val p = ok("""{"elements":[]}""")
         assertEquals("Profile", p.name)
-        assertEquals(Config.SENS_X, p.sensX, 0.001f)
-        assertEquals(Config.SENS_Y, p.sensY, 0.001f)
+        assertEquals(Config.SENS_UI_DEFAULT, p.sensX)
+        assertEquals(Config.SENS_UI_DEFAULT, p.sensY)
         assertEquals(Config.MAP_TOGGLE_KEY, p.mapToggleKey)
         assertEquals(ProfileCodec.CURRENT_VERSION, p.schemaVersion)
         assertTrue(p.id.isNotBlank())
@@ -126,7 +128,7 @@ class ProfileCodecTest {
     fun toLayout_missingJoystickCamera_usesDefaults() {
         val p = Profile(
             id = "x", name = "Chỉ nút", packageName = null, schemaVersion = 1,
-            sensX = 2f, sensY = 2f, mapToggleKey = LinuxKey.F9,
+            sensX = 40, sensY = 40, mapToggleKey = LinuxKey.F9,
             elements = listOf(
                 ProfileElement(ElementType.BUTTON, 0.5f, 0.5f, 0.03f, LinuxKey.SPACE, "Nhảy"),
             ),
@@ -209,7 +211,7 @@ class ProfileCodecTest {
     fun toLayout_swipeGoesToSwipesMap() {
         val p = Profile(
             id = "x", name = "Vuốt", packageName = null, schemaVersion = 1,
-            sensX = 1f, sensY = 1f, mapToggleKey = LinuxKey.F8,
+            sensX = 20, sensY = 20, mapToggleKey = LinuxKey.F8,
             elements = listOf(
                 ProfileElement(
                     ElementType.SWIPE, 0.2f, 0.5f, 0.03f, LinuxKey.E, "Vuốt",
@@ -235,8 +237,9 @@ class ProfileCodecTest {
     @Test
     fun roundTrip_newElementTypes() {
         val p = Profile(
-            id = "x", name = "Mới", packageName = null, schemaVersion = 1,
-            sensX = 1f, sensY = 1f, mapToggleKey = LinuxKey.F8,
+            id = "x", name = "Mới", packageName = null,
+            schemaVersion = ProfileCodec.CURRENT_VERSION,
+            sensX = 20, sensY = 20, mapToggleKey = LinuxKey.F8,
             elements = listOf(
                 ProfileElement(
                     ElementType.AUTO_TAP, 0.5f, 0.5f, 0.03f, LinuxKey.Q, "Auto",
@@ -257,7 +260,7 @@ class ProfileCodecTest {
                     ),
                 ),
             ),
-            dampX = 3, dampY = 5, overlayToggleKey = LinuxKey.F11,
+            dampX = 34, dampY = 56, overlayToggleKey = LinuxKey.F11,
         )
         val back = ok(ProfileCodec.toJson(p))
         assertEquals(p, back)
@@ -268,7 +271,8 @@ class ProfileCodecTest {
         val p = ok("""{"elements":[]}""")
         assertEquals(1, p.dampX)
         assertEquals(1, p.dampY)
-        assertEquals(LinuxKey.F10, p.overlayToggleKey)
+        // Build-11: mặc định phím ẩn/hiện lớp phủ đổi F10 -> F1.
+        assertEquals(LinuxKey.F1, p.overlayToggleKey)
         assertTrue(p.elements.isEmpty())
     }
 
@@ -288,7 +292,7 @@ class ProfileCodecTest {
     fun toLayout_newTypesGoToTheirMaps() {
         val p = Profile(
             id = "x", name = "Mới", packageName = null, schemaVersion = 1,
-            sensX = 1f, sensY = 1f, mapToggleKey = LinuxKey.F8,
+            sensX = 20, sensY = 20, mapToggleKey = LinuxKey.F8,
             elements = listOf(
                 ProfileElement(ElementType.AUTO_TAP, 0.5f, 0.5f, 0.03f, LinuxKey.Q, "A", intervalMs = 150L),
                 ProfileElement(ElementType.RELEASE_TAP, 0.6f, 0.6f, 0.03f, LinuxKey.E, "T"),
@@ -302,7 +306,7 @@ class ProfileCodecTest {
                     steps = emptyList(), // macro không có bước thì không vào bảng
                 ),
             ),
-            dampX = 2, dampY = 4,
+            dampX = 23, dampY = 45,
         )
         val l = p.toLayout(1000, 500)
         assertEquals(1, l.autoTaps.size)
@@ -312,8 +316,8 @@ class ProfileCodecTest {
         assertEquals(setOf(LinuxKey.V), l.freeLookKeys)
         assertEquals(1, l.macros.size)
         assertTrue(l.macros.containsKey(LinuxKey.R))
-        assertEquals(2, l.dampX)
-        assertEquals(4, l.dampY)
+        assertEquals(23, l.dampX)
+        assertEquals(45, l.dampY)
     }
 
     @Test
@@ -321,12 +325,82 @@ class ProfileCodecTest {
         // Profile cũ có camera size 0.26 (chữ nhật) -> toLayout kẹp về 0.12 tối đa.
         val p = Profile(
             id = "x", name = "Cũ", packageName = null, schemaVersion = 1,
-            sensX = 1f, sensY = 1f, mapToggleKey = LinuxKey.F8,
+            sensX = 20, sensY = 20, mapToggleKey = LinuxKey.F8,
             elements = listOf(
                 ProfileElement(ElementType.CAMERA, 0.58f, 0.5f, 0.26f, null, "Camera"),
             ),
         )
         val l = p.toLayout(2560, 1600)
         assertEquals(0.12f, l.camHW, 0.001f)
+    }
+
+    // ── Build-11: thang 1..100, migrate v1, vùng con trỏ, phím bật/tắt chuột ──
+
+    @Test
+    fun v1Json_migratesSensAndDampToUiScale() {
+        // JSON v1: sens float 1.0/2.5, damp 5/10 (thang 1..10) -> thang 1..100.
+        val p = ok(
+            """{"version":1,"name":"Cũ","sensX":1.0,"sensY":2.5,
+               "dampX":5,"dampY":10,"elements":[]}""",
+        )
+        assertEquals(20, p.sensX)
+        assertEquals(50, p.sensY)
+        assertEquals(45, p.dampX) // 1 + (5-1)*11
+        assertEquals(100, p.dampY)
+        assertEquals(ProfileCodec.CURRENT_VERSION, p.schemaVersion)
+    }
+
+    @Test
+    fun v2Json_readsSensAndDampDirectly() {
+        // JSON v2: sens/damp đã là thang 1..100, đọc thẳng, không migrate.
+        val p = ok(
+            """{"version":2,"name":"Mới","sensX":33,"sensY":77,
+               "dampX":12,"dampY":90,"elements":[]}""",
+        )
+        assertEquals(33, p.sensX)
+        assertEquals(77, p.sensY)
+        assertEquals(12, p.dampX)
+        assertEquals(90, p.dampY)
+    }
+
+    @Test
+    fun cursorRegionAndMouseKey_roundTrip() {
+        val p = ProfileCodec.defaultFreeFire().copy(
+            cursorRegion = Config.CURSOR_REGION_RIGHT,
+            mouseToggleKey = LinuxKey.F12,
+        )
+        val back = ok(ProfileCodec.toJson(p))
+        assertEquals(p, back)
+        assertEquals(Config.CURSOR_REGION_RIGHT, back.cursorRegion)
+        assertEquals(LinuxKey.F12, back.mouseToggleKey)
+    }
+
+    @Test
+    fun oldJson_withoutBuild11Fields_usesDefaults() {
+        val p = ok("""{"elements":[]}""")
+        assertEquals(Config.CURSOR_REGION_OFF, p.cursorRegion)
+        assertEquals(0, p.mouseToggleKey) // chưa gán
+    }
+
+    @Test
+    fun toLayout_sensUiToFactor() {
+        val p = ProfileCodec.defaultFreeFire().copy(sensX = 20, sensY = 100)
+        val l = p.toLayout(1000, 500)
+        assertEquals(1.0f, l.sensX, 0.001f)
+        assertEquals(5.0f, l.sensY, 0.001f)
+        val p2 = ProfileCodec.defaultFreeFire().copy(sensX = 1, sensY = 1)
+        val l2 = p2.toLayout(1000, 500)
+        assertEquals(0.05f, l2.sensX, 0.001f)
+    }
+
+    @Test
+    fun toLayout_cursorRegionAndMouseKeyPassedThrough() {
+        val p = ProfileCodec.defaultFreeFire().copy(
+            cursorRegion = Config.CURSOR_REGION_RIGHT,
+            mouseToggleKey = LinuxKey.F12,
+        )
+        val l = p.toLayout(1000, 500)
+        assertEquals(Config.CURSOR_REGION_RIGHT, l.cursorRegion)
+        assertEquals(LinuxKey.F12, l.mouseToggleKey)
     }
 }

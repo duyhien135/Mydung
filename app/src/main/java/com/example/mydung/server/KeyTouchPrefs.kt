@@ -19,14 +19,17 @@ object KeyTouchPrefs {
     private fun prefs(context: Context) =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    /** Tần số quét chuột (Hz) — tốc độ xử lý nội bộ của app, mặc định 500. */
+    /** Tần số quét chuột (Hz) — tốc độ xử lý nội bộ của app, mặc định 500.
+     *  Build-11: thêm 60 Hz và NO LIMIT (0). */
     fun pollRateHz(context: Context): Int {
         val v = prefs(context).getInt(KEY_POLL_RATE_HZ, Config.DEFAULT_POLL_RATE_HZ)
-        return if (v in Config.POLL_RATES) v else Config.DEFAULT_POLL_RATE_HZ
+        return if (v == Config.POLL_RATE_NO_LIMIT || v in Config.POLL_RATES) v
+        else Config.DEFAULT_POLL_RATE_HZ
     }
 
     fun setPollRateHz(context: Context, hz: Int) {
-        val v = if (hz in Config.POLL_RATES) hz else Config.DEFAULT_POLL_RATE_HZ
+        val v = if (hz == Config.POLL_RATE_NO_LIMIT || hz in Config.POLL_RATES) hz
+        else Config.DEFAULT_POLL_RATE_HZ
         prefs(context).edit().putInt(KEY_POLL_RATE_HZ, v).apply()
     }
 

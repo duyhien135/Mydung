@@ -47,7 +47,10 @@ import com.example.mydung.AdbConnectionManager
 import com.example.mydung.OverlayService
 import com.example.mydung.PairingState
 import com.example.mydung.server.AdbShellExecutor
+import com.example.mydung.server.Config
 import com.example.mydung.server.InputClient
+import com.example.mydung.server.LinuxKey
+import com.example.mydung.server.ProfileStore
 import com.example.mydung.server.RootShellExecutor
 import com.example.mydung.server.ServerManager
 import com.example.mydung.server.ServerStatus
@@ -278,11 +281,28 @@ fun SettingsScreen(
         }
 
         // Lớp phủ (build-9): hiện lại khi đã ẩn mà quên phím tắt (mặc định
-        // F10). Keymap vẫn chạy ngầm khi lớp phủ bị ẩn.
+        // F1 từ build-11). Keymap vẫn chạy ngầm khi lớp phủ bị ẩn.
+        // Phím hiện tại đọc từ profile đang dùng (đổi trong game: bấm nút
+        // K -> ⚙️ Cài đặt -> "Phím ẩn/hiện lớp phủ" ở đầu bảng).
+        val overlayKeyName = remember {
+            runCatching {
+                val store = ProfileStore(ProfileStore.defaultFile(context.filesDir))
+                val state = store.ensureDefault()
+                val active = state.profiles.firstOrNull { it.id == state.activeId }
+                    ?: state.profiles.first()
+                LinuxKey.name(active.overlayToggleKey)
+            }.getOrDefault(LinuxKey.name(Config.OVERLAY_TOGGLE_KEY))
+        }
         Text(
             "Lớp phủ",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
+        )
+        Text(
+            "Phím ẩn/hiện lớp phủ hiện tại: $overlayKeyName " +
+                "(đổi trong game: bấm nút K → ⚙️ Cài đặt → \"Phím ẩn/hiện lớp phủ\").",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -293,7 +313,7 @@ fun SettingsScreen(
             }
         }
         Text(
-            "Dùng khi đã ẩn lớp phủ mà quên phím tắt (mặc định F10). " +
+            "Dùng khi đã ẩn lớp phủ mà quên phím tắt. " +
                 "Keymap vẫn chạy ngầm khi lớp phủ bị ẩn.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

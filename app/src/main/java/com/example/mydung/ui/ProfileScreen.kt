@@ -43,6 +43,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.example.mydung.server.Config
 import com.example.mydung.server.LinuxKey
 import com.example.mydung.server.Profile
 import com.example.mydung.server.ProfileCodec
@@ -481,28 +482,33 @@ private fun ProfileDetailEditor(
             OutlinedTextField(
                 value = sensXText,
                 onValueChange = { sensXText = it },
-                label = { Text("Độ nhạy X") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                label = { Text("Độ nhạy X (1–100)") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 singleLine = true,
                 modifier = Modifier.weight(1f),
             )
             OutlinedTextField(
                 value = sensYText,
                 onValueChange = { sensYText = it },
-                label = { Text("Độ nhạy Y") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                label = { Text("Độ nhạy Y (1–100)") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 singleLine = true,
                 modifier = Modifier.weight(1f),
             )
             Button(onClick = {
-                val x = sensXText.trim().toFloatOrNull()?.takeIf { it.isFinite() }
-                val y = sensYText.trim().toFloatOrNull()?.takeIf { it.isFinite() }
+                val x = sensXText.trim().toIntOrNull()
+                val y = sensYText.trim().toIntOrNull()
                 if (x == null || y == null) {
-                    sensError = "Độ nhạy phải là số."
+                    sensError = "Độ nhạy phải là số nguyên 1–100."
                     return@Button
                 }
                 sensError = null
-                onUpdate(profile.copy(sensX = x.coerceIn(0.1f, 5f), sensY = y.coerceIn(0.1f, 5f)))
+                onUpdate(
+                    profile.copy(
+                        sensX = x.coerceIn(Config.SENS_UI_MIN, Config.SENS_UI_MAX),
+                        sensY = y.coerceIn(Config.SENS_UI_MIN, Config.SENS_UI_MAX),
+                    ),
+                )
             }) { Text("Áp dụng") }
         }
         sensError?.let {

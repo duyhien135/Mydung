@@ -1,10 +1,12 @@
 package com.example.mydung.ui
 
+import android.os.SystemClock
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,12 +16,15 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
@@ -50,6 +55,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.mydung.server.Config
+import com.example.mydung.server.DoubleTapDetector
 import com.example.mydung.server.ElementType
 import com.example.mydung.server.LinuxKey
 import com.example.mydung.server.MacroStep
@@ -73,6 +79,15 @@ private val KEYED_TYPES = setOf(
  * chuột USB. Nền trong suốt để thấy game phía dưới mà căn vị trí nút theo
  * nút game. Phím là vòng tròn có nhãn nằm đúng vị trí chạm (kiểu GG).
  *
+ * Build-11:
+ * - Chạm 1 lần vào phần tử chỉ CHỌN (viền vàng) / kéo để dời; phải
+ *   DOUBLE-TAP mới mở bảng chỉnh của phần tử đó (trước đây chạm 1 lần là
+ *   mở bảng ngay). Camera là ngoại lệ: double-tap vòng camera thì bật/tắt
+ *   chuột; chạm 1 lần vào camera thì hiện chữ "edit" + nút -/+ chỉnh X/Y
+ *   quanh vòng (kiểu K7XD), bấm "edit" mới mở bảng chỉnh camera.
+ * - Chạm vào khoảng trống thì đề xuất gán phím cho 1 nút Tap mới tại đúng
+ *   chỗ đó (bấm phím là tạo xong), khỏi mở "Thêm thành phần".
+ *
  * Lưu ý: callback kéo dùng rememberUpdatedState để pointerInput (key Unit,
  * chạy 1 lần) luôn thấy danh sách mới nhất — key theo phần tử sẽ làm
  * pointerInput khởi động lại giữa chừng và cắt ngang cú kéo.
@@ -81,6 +96,10 @@ private val KEYED_TYPES = setOf(
  * (readRealDisplay), không theo kích thước cửa sổ — cửa sổ chỉnh đã đặt cờ
  * FLAG_LAYOUT_NO_LIMITS + tràn tai thỏ nên 2 kích thước này bằng nhau, nhưng
  * lấy kích thước thật vẫn đúng ngay cả khi cửa sổ bị inset.
+ *
+ * Index bắt phím đặc biệt (xem OverlayService): -1 = phím ẩn/hiện lớp phủ
+ * (không dùng trong trình sửa), -2 = gán nhanh Tap tại khoảng trống,
+ * -3 = phím bật/tắt chuột (bảng chỉnh camera).
  */
 @Composable
 fun EditorOverlay(
@@ -95,13 +114,41 @@ fun EditorOverlay(
     // Build-9: báo danh sách phần tử hiện tại cho Service (rời game khi đang
     // chỉnh thì Service lưu từ đây, không cần composable còn sống).
     onElementsChange: (List<ProfileElement>) -> Unit = {},
+    // Build-11: cài đặt cho bảng chỉnh camera (Service giữ flow + áp dụng).
+    sensX: StateFlow<Int>,
+    sensY: StateFlow<Int>,
+    dampX: StateFlow<Int>,
+    dampY: StateFlow<Int>,
+    pollRateHz: StateFlow<Int>,
+    cursorRegion: StateFlow<Int>,
+    mouseToggleKey: StateFlow<Int>,
+    mouseOn: StateFlow<Boolean>,
+    overlayToggleKey: StateFlow<Int>,
+    onSensXChange: (Int) -> Unit,
+    onSensYChange: (Int) -> Unit,
+    onDampXChange: (Int) -> Unit,
+    onDampYChange: (Int) -> Unit,
+    onPollRateChange: (Int) -> Unit,
+    onCursorRegionChange: (Int) -> Unit,
+    onMouseToggleKeyChange: (Int) -> Unit,
+    onRequestMouseKeyCapture: () -> Unit,
+    onToggleMouse: () -> Unit,
 ) {
     var elements by remember { mutableStateOf(profile.elements) }
     var selected by remember { mutableStateOf<Int?>(null) }
+    // Build-11: phần tử nào đang MỞ BẢNG CHỈNH (khác với `selected` chỉ
+    // chọn/highlight): chỉ double-tap mới mở bảng.
+    var panelIndex by remember { mutableStateOf<Int?>(null) }
+    // Build-11: bảng chỉnh camera (mở bằng nút "edit" quanh vòng camera).
+    var cameraPanelOpen by remember { mutableStateOf(false) }
+    // Build-11: vị trí (tỉ lệ) đang đề xuất gán nhanh Tap (chạm khoảng trống).
+    var quickAssignPos by remember { mutableStateOf<Pair<Float, Float>?>(null) }
     var undoStack by remember { mutableStateOf<List<List<ProfileElement>>>(emptyList()) }
     var warning by remember { mutableStateOf<String?>(null) }
     var sliderUndoPushed by remember { mutableStateOf(false) }
     var showAddMenu by remember { mutableStateOf(false) }
+    // Build-11: nhận diện double-tap (2 lần chạm cùng phần tử trong 300ms).
+    val doubleTap = remember { DoubleTapDetector() }
 
     val context = LocalContext.current
     // Kích thước thật của màn hình (tính cả xoay) làm mốc tỉ lệ 0-1.
@@ -110,6 +157,16 @@ fun EditorOverlay(
     val currentElements by rememberUpdatedState(elements)
     val captureIndex by captureRequest.collectAsState()
     val captured by capturedKey.collectAsState()
+    // Giá trị hiện tại cho bảng chỉnh camera.
+    val sensXValue by sensX.collectAsState()
+    val sensYValue by sensY.collectAsState()
+    val dampXValue by dampX.collectAsState()
+    val dampYValue by dampY.collectAsState()
+    val pollHzValue by pollRateHz.collectAsState()
+    val cursorRegionValue by cursorRegion.collectAsState()
+    val mouseKeyValue by mouseToggleKey.collectAsState()
+    val mouseOnValue by mouseOn.collectAsState()
+    val overlayKeyValue by overlayToggleKey.collectAsState()
 
     // Báo danh sách hiện tại cho Service mỗi khi đổi (để lưu khi rời game).
     LaunchedEffect(elements) { onElementsChange(elements) }
@@ -123,6 +180,8 @@ fun EditorOverlay(
         val newIndex = currentElements.size
         elements = currentElements + e
         selected = newIndex
+        panelIndex = null
+        cameraPanelOpen = false
     }
 
     fun dragElement(i: Int, dxRatio: Float, dyRatio: Float) {
@@ -168,11 +227,90 @@ fun EditorOverlay(
         elements = currentElements.mapIndexed { j, old -> if (j == i) e else old }
     }
 
-    // Áp dụng phím vừa bắt được (chỉ khi index còn đúng phần tử đang chọn).
+    /** Đóng mọi bảng chỉnh (bảng nút / bảng camera / gợi ý gán nhanh). */
+    fun closePanels() {
+        panelIndex = null
+        cameraPanelOpen = false
+        if (quickAssignPos != null) {
+            quickAssignPos = null
+            onCancelCapture()
+        }
+    }
+
+    /**
+     * Chạm 1 lần vào phần tử [i] (build-11): lần 1 chỉ chọn (viền vàng) +
+     * đóng bảng khác đang mở; lần 2 trong 300ms (double-tap) thì mở bảng
+     * chỉnh của nút đó — riêng camera thì double-tap bật/tắt chuột ngay,
+     * bảng chỉnh camera mở bằng nút "edit" quanh vòng.
+     */
+    fun handleElementTap(i: Int) {
+        val e = currentElements.getOrNull(i) ?: return
+        // Chạm vào phần tử thì hủy gợi ý gán nhanh (nếu đang chờ bấm phím).
+        if (quickAssignPos != null) {
+            quickAssignPos = null
+            onCancelCapture()
+        }
+        if (doubleTap.tap(i, SystemClock.uptimeMillis())) {
+            if (e.type == ElementType.CAMERA) {
+                onToggleMouse()
+            } else {
+                panelIndex = i
+                cameraPanelOpen = false
+            }
+        } else {
+            selected = i
+            if (panelIndex != i) panelIndex = null
+        }
+    }
+
+    // Áp dụng phím vừa bắt được.
     LaunchedEffect(captured) {
         val c = captured ?: return@LaunchedEffect
         val (index, code) = c
-        if (index !in currentElements.indices || index != selected) {
+        when (index) {
+            // Build-11: gán nhanh Tap tại khoảng trống — tạo nút mới tại
+            // vị trí đã chạm, phím trùng thì báo (không tạo).
+            -2 -> {
+                val pos = quickAssignPos
+                quickAssignPos = null
+                if (pos == null) {
+                    onClearCaptured()
+                    return@LaunchedEffect
+                }
+                val dup = currentElements.indexOfFirst {
+                    it.enabled && it.keyCode == code && it.type in KEYED_TYPES
+                }
+                if (dup >= 0) {
+                    warning = "Phím ${LinuxKey.name(code)} đã gán cho \"${currentElements[dup].name}\"."
+                } else {
+                    pushUndo()
+                    val newIndex = currentElements.size
+                    elements = currentElements + ProfileElement(
+                        ElementType.BUTTON, pos.first, pos.second,
+                        Config.DEFAULT_BUTTON_SIZE, code, LinuxKey.name(code),
+                    )
+                    selected = newIndex
+                    panelIndex = null
+                    warning = null
+                }
+                onClearCaptured()
+                return@LaunchedEffect
+            }
+            // Build-11: phím bật/tắt chuột (bảng chỉnh camera) — Service
+            // kiểm tra trùng (F8/F9/phím lớp phủ) rồi mới lưu.
+            -3 -> {
+                onMouseToggleKeyChange(code)
+                onClearCaptured()
+                return@LaunchedEffect
+            }
+            -1 -> {
+                // Phím ẩn/hiện lớp phủ chỉ gán ở bảng nút K, không ở đây.
+                onClearCaptured()
+                return@LaunchedEffect
+            }
+        }
+        // Gán phím cho phần tử (chỉ khi index còn đúng phần tử đang mở bảng).
+        if (index !in currentElements.indices || index != panelIndex) {
             onClearCaptured()
             return@LaunchedEffect
         }
@@ -217,14 +355,31 @@ fun EditorOverlay(
             }.map { it.name }
         }
 
-        // Chạm vào chỗ trống: bỏ chọn.
+        // Chạm vào chỗ trống (build-11): nếu đang mở bảng thì chỉ đóng bảng;
+        // nếu không thì đề xuất gán phím cho 1 nút Tap mới tại đúng chỗ đó
+        // (bấm phím là tạo xong) — chạm lại vào khoảng trống thì hủy đề xuất.
+        // Bỏ qua vùng thanh trên (~64dp đầu màn hình).
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .clickable(
-                    indication = null,
-                    interactionSource = remember { MutableInteractionSource() },
-                ) { selected = null },
+                .pointerInput(panelIndex, cameraPanelOpen, showAddMenu, quickAssignPos) {
+                    detectTapGestures { offset ->
+                        if (offset.y < with(density) { 64.dp.toPx() }) return@detectTapGestures
+                        if (panelIndex != null || cameraPanelOpen || showAddMenu) {
+                            selected = null
+                            closePanels()
+                            return@detectTapGestures
+                        }
+                        if (quickAssignPos != null) {
+                            quickAssignPos = null
+                            onCancelCapture()
+                            return@detectTapGestures
+                        }
+                        selected = null
+                        quickAssignPos = (offset.x / screenW) to (offset.y / screenH)
+                        onRequestKeyCapture(-2)
+                    }
+                },
         )
 
         // Đường vuốt (vẽ dưới vòng tròn): đường thẳng + mũi tên ở điểm cuối.
@@ -262,15 +417,19 @@ fun EditorOverlay(
             }
         }
 
-        // Các phần tử.
+        // Các phần tử: chạm = chọn/double-tap mở bảng (handleElementTap);
+        // bắt đầu kéo thì chỉ chọn + đẩy undo (kéo không tính là chạm).
         elements.forEachIndexed { i, e ->
             ElementView(
                 element = e,
                 selected = selected == i,
                 screenW = screenW,
                 screenH = screenH,
-                onSelect = { selected = i },
-                onDragStart = { pushUndo() },
+                onSelect = { handleElementTap(i) },
+                onDragStart = {
+                    selected = i
+                    pushUndo()
+                },
                 onDrag = { dx, dy -> dragElement(i, dx / screenW, dy / screenH) },
             )
         }
@@ -282,9 +441,47 @@ fun EditorOverlay(
                 element = e,
                 screenW = screenW,
                 screenH = screenH,
-                onSelect = { selected = i },
-                onDragStart = { pushUndo() },
+                onSelect = { handleElementTap(i) },
+                onDragStart = {
+                    selected = i
+                    pushUndo()
+                },
                 onDrag = { dx, dy -> dragSwipeEnd(i, dx / screenW, dy / screenH) },
+            )
+        }
+
+        // Build-11: camera đang chọn thì hiện chữ "edit" + nút -/+ chỉnh X/Y
+        // quanh vòng (kiểu K7XD) — bấm "edit" mở bảng chỉnh camera.
+        selected?.let { i ->
+            val e = elements.getOrNull(i)
+            if (e != null && e.type == ElementType.CAMERA) {
+                CameraQuickEdit(
+                    element = e,
+                    screenW = screenW,
+                    screenH = screenH,
+                    sensX = sensXValue,
+                    sensY = sensYValue,
+                    mouseOn = mouseOnValue,
+                    onSensXChange = onSensXChange,
+                    onSensYChange = onSensYChange,
+                    onEditClick = { cameraPanelOpen = true },
+                    onToggleMouse = onToggleMouse,
+                )
+            }
+        }
+
+        // Build-11: gợi ý gán nhanh Tap tại khoảng trống vừa chạm.
+        quickAssignPos?.let { pos ->
+            QuickAssignHint(
+                xRatio = pos.first,
+                yRatio = pos.second,
+                screenW = screenW,
+                screenH = screenH,
+                waiting = captureIndex == -2,
+                onCancel = {
+                    quickAssignPos = null
+                    onCancelCapture()
+                },
             )
         }
 
@@ -313,6 +510,8 @@ fun EditorOverlay(
                     elements = undoStack.last()
                     undoStack = undoStack.dropLast(1)
                     selected = null
+                    panelIndex = null
+                    cameraPanelOpen = false
                 },
                 enabled = undoStack.isNotEmpty() && captureIndex == null,
             ) { Text("↩ Hoàn tác", color = Color.White) }
@@ -327,6 +526,8 @@ fun EditorOverlay(
                     }
                     elements = defaults
                     selected = null
+                    panelIndex = null
+                    cameraPanelOpen = false
                 },
                 enabled = captureIndex == null,
             ) { Text("⟲ Đặt lại", color = Color.White) }
@@ -370,10 +571,12 @@ fun EditorOverlay(
             }
         }
 
-        // Bảng chỉnh phần tử đang chọn.
-        selected?.let { i ->
+        // Bảng chỉnh phần tử đang mở (chỉ mở bằng DOUBLE-TAP — chạm 1 lần
+        // chỉ chọn, xem handleElementTap). Camera không dùng bảng này mà
+        // dùng bảng chỉnh camera riêng (mở bằng nút "edit" quanh vòng).
+        panelIndex?.let { i ->
             val e = elements.getOrNull(i)
-            if (e != null) {
+            if (e != null && e.type != ElementType.CAMERA) {
                 Card(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
@@ -500,17 +703,6 @@ fun EditorOverlay(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        if (e.type == ElementType.CAMERA) {
-                            Text(
-                                "FPS Look — vòng tròn nhỏ để chuột kéo camera (nhìn tự do). " +
-                                    "Chuột ra khỏi vòng thì tự nhấc rồi chạm lại ở điểm đối xứng " +
-                                    "qua tâm để kéo tiếp không hết vùng. Phím " +
-                                    "${LinuxKey.name(profile.cursorToggleKey)} chuyển sang chế độ " +
-                                    "con trỏ để bấm giao diện game.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("Cỡ", modifier = Modifier.width(32.dp))
                             Slider(
@@ -543,14 +735,59 @@ fun EditorOverlay(
                                     pushUndo()
                                     elements = currentElements.filterIndexed { j, _ -> j != i }
                                     selected = null
+                                    panelIndex = null
                                 },
                                 enabled = captureIndex == null,
                             ) { Text("Xóa") }
                             Spacer(modifier = Modifier.weight(1f))
-                            TextButton(onClick = { selected = null }) { Text("Xong") }
+                            TextButton(onClick = { panelIndex = null }) { Text("Xong") }
                         }
                     }
                 }
+            }
+        }
+
+        // Bảng chỉnh camera (build-11, kiểu K7XD — mở bằng nút "edit" quanh
+        // vòng camera): độ nhạy X/Y, kháng nhạy X/Y, tần số quét chuột,
+        // giới hạn vùng con trỏ, phím bật/tắt chuột. Render INLINE (không
+        // AlertDialog — xem ghi chú ở hộp "Thêm thành phần").
+        if (cameraPanelOpen) {
+            val camIndex = elements.indexOfFirst { it.type == ElementType.CAMERA }
+            val cam = elements.getOrNull(camIndex)
+            if (cam != null) {
+                CameraPanel(
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                    element = cam,
+                    sensX = sensXValue,
+                    sensY = sensYValue,
+                    dampX = dampXValue,
+                    dampY = dampYValue,
+                    pollHz = pollHzValue,
+                    cursorRegion = cursorRegionValue,
+                    mouseKey = mouseKeyValue,
+                    mouseOn = mouseOnValue,
+                    overlayKey = overlayKeyValue,
+                    captureIndex = captureIndex,
+                    onElementUpdate = { updated -> updateElement(camIndex, updated) },
+                    onPushUndo = { pushUndo() },
+                    onDelete = {
+                        pushUndo()
+                        elements = currentElements.filterIndexed { j, _ -> j != camIndex }
+                        selected = null
+                        cameraPanelOpen = false
+                    },
+                    onSensXChange = onSensXChange,
+                    onSensYChange = onSensYChange,
+                    onDampXChange = onDampXChange,
+                    onDampYChange = onDampYChange,
+                    onPollRateChange = onPollRateChange,
+                    onCursorRegionChange = onCursorRegionChange,
+                    onMouseToggleKeyChange = onMouseToggleKeyChange,
+                    onRequestMouseKeyCapture = onRequestMouseKeyCapture,
+                    onCancelCapture = onCancelCapture,
+                    onToggleMouse = onToggleMouse,
+                    onClose = { cameraPanelOpen = false },
+                )
             }
         }
 
@@ -858,11 +1095,11 @@ private fun ElementView(
                 interactionSource = remember { MutableInteractionSource() },
             ) { onSelect() }
             .pointerInput(Unit) {
+                // Bắt đầu kéo chỉ chọn + đẩy undo (qua onDragStart), KHÔNG
+                // gọi onSelect — kéo không tính là chạm (kẻo chạm 1 lần rồi
+                // kéo ngay trong 300ms bị nhận nhầm thành double-tap).
                 detectDragGestures(
-                    onDragStart = {
-                        onSelect()
-                        onDragStart()
-                    },
+                    onDragStart = { onDragStart() },
                     onDrag = { _, dragAmount -> onDrag(dragAmount.x, dragAmount.y) },
                 )
             },
@@ -917,11 +1154,9 @@ private fun SwipeEndHandle(
                 interactionSource = remember { MutableInteractionSource() },
             ) { onSelect() }
             .pointerInput(Unit) {
+                // Như ElementView: kéo không tính là chạm.
                 detectDragGestures(
-                    onDragStart = {
-                        onSelect()
-                        onDragStart()
-                    },
+                    onDragStart = { onDragStart() },
                     onDrag = { _, dragAmount -> onDrag(dragAmount.x, dragAmount.y) },
                 )
             },
@@ -932,6 +1167,459 @@ private fun SwipeEndHandle(
                 .size(20.dp)
                 .background(Color(0xFFAB47BC).copy(alpha = 0.6f), CircleShape)
                 .border(2.dp, Color.White, CircleShape),
+        )
+    }
+}
+
+/**
+ * Chữ "edit" + nút -/+ chỉnh X/Y quanh vòng camera khi camera đang chọn
+ * (build-11, kiểu K7XD — ảnh 1): cụm X ở trên vòng, cụm Y ở dưới vòng,
+ * nút "edit" ở bên phải vòng. Bấm -/+ chỉnh độ nhạy X/Y trực tiếp (mỗi
+ * lần ±5, thang 1..100); bấm "edit" mở bảng chỉnh camera đầy đủ.
+ */
+@Composable
+private fun CameraQuickEdit(
+    element: ProfileElement,
+    screenW: Float,
+    screenH: Float,
+    sensX: Int,
+    sensY: Int,
+    mouseOn: Boolean,
+    onSensXChange: (Int) -> Unit,
+    onSensYChange: (Int) -> Unit,
+    onEditClick: () -> Unit,
+    onToggleMouse: () -> Unit,
+) {
+    val density = LocalDensity.current
+    val radiusPx = element.size * screenW
+    val cx = element.x * screenW
+    val cy = element.y * screenH
+    val stepperW = with(density) { 132.dp.toPx() }
+    val stepperH = with(density) { 32.dp.toPx() }
+    val gap = with(density) { 6.dp.toPx() }
+    // Kẹp trong màn hình để vòng camera ở sát mép vẫn bấm được nút.
+    val stepperX = (cx - stepperW / 2).coerceIn(0f, (screenW - stepperW).coerceAtLeast(0f))
+    val xY = (cy - radiusPx - gap - stepperH).coerceAtLeast(0f)
+    val yY = (cy + radiusPx + gap).coerceAtMost((screenH - stepperH).coerceAtLeast(0f))
+    val editW = with(density) { 52.dp.toPx() }
+    val editH = with(density) { 32.dp.toPx() }
+    val editX = (cx + radiusPx + gap).coerceAtMost((screenW - editW).coerceAtLeast(0f))
+    val editY = (cy - editH / 2).coerceIn(0f, (screenH - editH).coerceAtLeast(0f))
+
+    // Cụm chỉnh X (trên vòng).
+    Row(
+        modifier = Modifier
+            .offset { IntOffset(stepperX.roundToInt(), xY.roundToInt()) }
+            .background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(16.dp))
+            .padding(horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TextButton(onClick = {
+            onSensXChange((sensX - 5).coerceIn(Config.SENS_UI_MIN, Config.SENS_UI_MAX))
+        }) { Text("−", color = Color.White, fontSize = 18.sp) }
+        Text(
+            text = "X $sensX",
+            color = Color.White,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.width(44.dp),
+            textAlign = TextAlign.Center,
+        )
+        TextButton(onClick = {
+            onSensXChange((sensX + 5).coerceIn(Config.SENS_UI_MIN, Config.SENS_UI_MAX))
+        }) { Text("+", color = Color.White, fontSize = 18.sp) }
+    }
+    // Cụm chỉnh Y (dưới vòng).
+    Row(
+        modifier = Modifier
+            .offset { IntOffset(stepperX.roundToInt(), yY.roundToInt()) }
+            .background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(16.dp))
+            .padding(horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TextButton(onClick = {
+            onSensYChange((sensY - 5).coerceIn(Config.SENS_UI_MIN, Config.SENS_UI_MAX))
+        }) { Text("−", color = Color.White, fontSize = 18.sp) }
+        Text(
+            text = "Y $sensY",
+            color = Color.White,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.width(44.dp),
+            textAlign = TextAlign.Center,
+        )
+        TextButton(onClick = {
+            onSensYChange((sensY + 5).coerceIn(Config.SENS_UI_MIN, Config.SENS_UI_MAX))
+        }) { Text("+", color = Color.White, fontSize = 18.sp) }
+    }
+    // Nút "edit" (bên phải vòng) + chấm trạng thái chuột.
+    Row(
+        modifier = Modifier.offset { IntOffset(editX.roundToInt(), editY.roundToInt()) },
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .background(Color(0xFF1976D2), RoundedCornerShape(16.dp))
+                .clickable { onEditClick() }
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(text = "edit", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        }
+        // Chấm trạng thái chuột: xanh = đang bật, đỏ = đang tắt (bấm để đổi).
+        Box(
+            modifier = Modifier
+                .size(20.dp)
+                .background(
+                    if (mouseOn) Color(0xFF4CAF50) else Color(0xFFEF5350),
+                    CircleShape,
+                )
+                .border(1.dp, Color.White, CircleShape)
+                .clickable { onToggleMouse() },
+        )
+    }
+}
+
+/**
+ * Gợi ý gán nhanh Tap (build-11): vòng tròn đánh dấu vị trí vừa chạm +
+ * thẻ gợi ý bên dưới ("Bấm phím để tạo nút Tap ở đây"). Bấm phím là tạo
+ * xong nút tại đúng chỗ đó; bấm Hủy (hoặc chạm khoảng trống lần nữa) thì bỏ.
+ */
+@Composable
+private fun QuickAssignHint(
+    xRatio: Float,
+    yRatio: Float,
+    screenW: Float,
+    screenH: Float,
+    waiting: Boolean,
+    onCancel: () -> Unit,
+) {
+    val density = LocalDensity.current
+    val cx = xRatio * screenW
+    val cy = yRatio * screenH
+    val markerPx = with(density) { 48.dp.toPx() }
+    val cardW = with(density) { 260.dp.toPx() }
+    val cardX = (cx - cardW / 2).coerceIn(0f, (screenW - cardW).coerceAtLeast(0f))
+    // Thẻ ở dưới vòng đánh dấu; gần đáy màn hình thì đẩy lên trên.
+    val cardY = (cy + markerPx / 2 + with(density) { 8.dp.toPx() })
+        .coerceAtMost((screenH - with(density) { 110.dp.toPx() }).coerceAtLeast(0f))
+    Box(
+        modifier = Modifier
+            .offset {
+                IntOffset(
+                    (cx - markerPx / 2).roundToInt(),
+                    (cy - markerPx / 2).roundToInt(),
+                )
+            }
+            .size(with(density) { markerPx.toDp() })
+            .background(Color(0xFF42A5F5).copy(alpha = 0.3f), CircleShape)
+            .border(2.dp, Color(0xFF42A5F5), CircleShape),
+    )
+    Card(
+        modifier = Modifier.offset {
+            IntOffset(cardX.roundToInt(), cardY.roundToInt())
+        },
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = "Bấm phím để tạo nút Tap ở đây",
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp,
+            )
+            Text(
+                text = if (waiting) "Đang chờ bấm phím…" else "Chạm khoảng trống lần nữa để hủy.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                TextButton(onClick = onCancel) { Text("Hủy") }
+            }
+        }
+    }
+}
+
+/**
+ * Bảng chỉnh camera (build-11, kiểu K7XD — ảnh 2): độ nhạy X/Y, kháng nhạy
+ * X/Y (thang 1..100), tần số quét chuột (60/125/250/500/1000 Hz + NO
+ * LIMIT), giới hạn vùng con trỏ (TẮT / TOÀN MÀN / MÀN PHẢI), phím bật/tắt
+ * chuột, cỡ vòng. Render INLINE trong cùng cửa sổ overlay (không
+ * AlertDialog). Các chỉnh áp dụng ngay khi nhả tay / bấm chip; nút Lưu
+ * chỉ đóng bảng (giá trị đã lưu rồi).
+ */
+@Composable
+private fun CameraPanel(
+    modifier: Modifier = Modifier,
+    element: ProfileElement,
+    sensX: Int,
+    sensY: Int,
+    dampX: Int,
+    dampY: Int,
+    pollHz: Int,
+    cursorRegion: Int,
+    mouseKey: Int,
+    mouseOn: Boolean,
+    overlayKey: Int,
+    captureIndex: Int?,
+    onElementUpdate: (ProfileElement) -> Unit,
+    onPushUndo: () -> Unit,
+    onDelete: () -> Unit,
+    onSensXChange: (Int) -> Unit,
+    onSensYChange: (Int) -> Unit,
+    onDampXChange: (Int) -> Unit,
+    onDampYChange: (Int) -> Unit,
+    onPollRateChange: (Int) -> Unit,
+    onCursorRegionChange: (Int) -> Unit,
+    onMouseToggleKeyChange: (Int) -> Unit,
+    onRequestMouseKeyCapture: () -> Unit,
+    onCancelCapture: () -> Unit,
+    onToggleMouse: () -> Unit,
+    onClose: () -> Unit,
+) {
+    var sensXSlider by remember { mutableStateOf(sensX.toFloat()) }
+    var sensYSlider by remember { mutableStateOf(sensY.toFloat()) }
+    var dampXSlider by remember { mutableStateOf(dampX.toFloat()) }
+    var dampYSlider by remember { mutableStateOf(dampY.toFloat()) }
+    var sizeSliderUndoPushed by remember { mutableStateOf(false) }
+    LaunchedEffect(sensX) { sensXSlider = sensX.toFloat() }
+    LaunchedEffect(sensY) { sensYSlider = sensY.toFloat() }
+    LaunchedEffect(dampX) { dampXSlider = dampX.toFloat() }
+    LaunchedEffect(dampY) { dampYSlider = dampY.toFloat() }
+
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(12.dp)
+            .heightIn(max = 520.dp),
+    ) {
+        Column(
+            modifier = Modifier
+                .verticalScroll(rememberScrollState())
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "Chỉnh camera — FPS Look",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = if (mouseOn) "Chuột: Bật" else "Chuột: Tắt",
+                    color = if (mouseOn) Color(0xFF2E7D32) else Color(0xFFC62828),
+                    fontSize = 13.sp,
+                )
+            }
+            Text(
+                "FPS Look — vòng tròn nhỏ để chuột kéo camera (nhìn tự do). " +
+                    "Chuột ra khỏi vòng thì tự nhấc rồi chạm lại ở điểm đối xứng " +
+                    "qua tâm để kéo tiếp không hết vùng.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = element.name,
+                    onValueChange = { onElementUpdate(element.copy(name = it)) },
+                    label = { Text("Tên") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Bật")
+                Switch(
+                    checked = element.enabled,
+                    onCheckedChange = {
+                        onPushUndo()
+                        onElementUpdate(element.copy(enabled = it))
+                    },
+                )
+            }
+            // Độ nhạy X/Y (thang 1..100).
+            CameraSliderRow(
+                label = "Độ nhạy X (ngang)",
+                value = sensXSlider,
+                onValueChange = { sensXSlider = it },
+                onValueChangeFinished = { onSensXChange(sensXSlider.roundToInt()) },
+            )
+            CameraSliderRow(
+                label = "Độ nhạy Y (dọc)",
+                value = sensYSlider,
+                onValueChange = { sensYSlider = it },
+                onValueChangeFinished = { onSensYChange(sensYSlider.roundToInt()) },
+            )
+            // Kháng nhạy (đầm tâm) X/Y + ghi chú như K7XD.
+            CameraSliderRow(
+                label = "Kháng nhạy X",
+                value = dampXSlider,
+                onValueChange = { dampXSlider = it },
+                onValueChangeFinished = { onDampXChange(dampXSlider.roundToInt()) },
+            )
+            CameraSliderRow(
+                label = "Kháng nhạy Y",
+                value = dampYSlider,
+                onValueChange = { dampYSlider = it },
+                onValueChangeFinished = { onDampYChange(dampYSlider.roundToInt()) },
+            )
+            Text(
+                "Tắt: Không kháng / Thấp: Nhẹ hơn / Cao: Nặng hơn " +
+                    "(mức 1 = không kháng, mức càng cao càng đầm).",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            // Tần số quét chuột.
+            Text("Tần số quét chuột", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                val rates = Config.POLL_RATES + Config.POLL_RATE_NO_LIMIT
+                for (hz in rates) {
+                    val label = if (hz == Config.POLL_RATE_NO_LIMIT) "NO LIMIT" else "${hz}Hz"
+                    Box(
+                        modifier = Modifier
+                            .background(
+                                if (hz == pollHz) Color(0xFF1976D2)
+                                else Color.Black.copy(alpha = 0.08f),
+                                RoundedCornerShape(8.dp),
+                            )
+                            .clickable { onPollRateChange(hz) }
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                    ) {
+                        Text(
+                            text = label,
+                            color = if (hz == pollHz) Color.White else Color.Black,
+                            fontSize = 13.sp,
+                        )
+                    }
+                }
+            }
+            Text(
+                "Tốc độ xử lý nội bộ của app, không đổi được polling rate phần cứng của chuột.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            // Giới hạn vùng con trỏ.
+            Text("Giới hạn vùng con trỏ", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                val regions = listOf(
+                    Config.CURSOR_REGION_OFF to "TẮT",
+                    Config.CURSOR_REGION_FULL to "TOÀN MÀN",
+                    Config.CURSOR_REGION_RIGHT to "MÀN PHẢI",
+                )
+                for ((value, label) in regions) {
+                    Box(
+                        modifier = Modifier
+                            .background(
+                                if (value == cursorRegion) Color(0xFF1976D2)
+                                else Color.Black.copy(alpha = 0.08f),
+                                RoundedCornerShape(8.dp),
+                            )
+                            .clickable { onCursorRegionChange(value) }
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                    ) {
+                        Text(
+                            text = label,
+                            color = if (value == cursorRegion) Color.White else Color.Black,
+                            fontSize = 13.sp,
+                        )
+                    }
+                }
+            }
+            Text(
+                "MÀN PHẢI: con trỏ chỉ di chuyển ở nửa phải màn hình (tránh chạm nhầm joystick).",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            // Phím bật/tắt chuột.
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "Phím bật/tắt chuột: " +
+                        (if (mouseKey == 0) "Chưa gán" else LinuxKey.name(mouseKey)),
+                    modifier = Modifier.weight(1f),
+                    fontSize = 14.sp,
+                )
+                if (captureIndex == -3) {
+                    OutlinedButton(onClick = onCancelCapture) {
+                        Text("Đang chờ bấm phím… (bấm để hủy)")
+                    }
+                } else {
+                    Button(onClick = onRequestMouseKeyCapture) { Text("Gán phím") }
+                }
+            }
+            Text(
+                "Bấm phím này để bật/tắt chuột ngay trong game (tắt thì con trỏ " +
+                    "đứng yên + camera không xoay; phím/nút vẫn chạy). Double-tap " +
+                    "vòng camera cũng bật/tắt được. Không gán trùng F8/F9/" +
+                    "${LinuxKey.name(overlayKey)}.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(onClick = onToggleMouse) {
+                    Text(if (mouseOn) "Tắt chuột ngay" else "Bật chuột ngay")
+                }
+            }
+            // Cỡ vòng camera.
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Cỡ vòng", modifier = Modifier.width(64.dp))
+                Slider(
+                    value = element.size,
+                    onValueChange = { v ->
+                        if (!sizeSliderUndoPushed) {
+                            onPushUndo()
+                            sizeSliderUndoPushed = true
+                        }
+                        onElementUpdate(element.copy(size = v))
+                    },
+                    onValueChangeFinished = { sizeSliderUndoPushed = false },
+                    valueRange = Config.CAM_RADIUS_MIN..Config.CAM_RADIUS_MAX,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = "%.0f%%".format(element.size * 100),
+                    modifier = Modifier.width(44.dp),
+                    textAlign = TextAlign.End,
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = onDelete,
+                    enabled = captureIndex == null,
+                ) { Text("Xóa") }
+                Spacer(modifier = Modifier.weight(1f))
+                Button(onClick = onClose) { Text("Lưu") }
+            }
+        }
+    }
+}
+
+/** 1 hàng trượt 1..100 trong bảng chỉnh camera (nhãn + giá trị + thanh trượt). */
+@Composable
+private fun CameraSliderRow(
+    label: String,
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    onValueChangeFinished: () -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(label, modifier = Modifier.width(110.dp), fontSize = 14.sp)
+        Slider(
+            value = value,
+            onValueChange = onValueChange,
+            onValueChangeFinished = onValueChangeFinished,
+            valueRange = 1f..100f,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = "${value.roundToInt()}",
+            modifier = Modifier.width(36.dp),
+            textAlign = TextAlign.End,
+            fontSize = 14.sp,
         )
     }
 }

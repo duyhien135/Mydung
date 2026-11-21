@@ -38,12 +38,63 @@ class ConfigTest {
 
     @Test
     fun pollIntervalMs_rates() {
+        assertEquals(16L, Config.pollIntervalMs(60))
         assertEquals(8L, Config.pollIntervalMs(125))
         assertEquals(4L, Config.pollIntervalMs(250))
         assertEquals(2L, Config.pollIntervalMs(500))
         assertEquals(1L, Config.pollIntervalMs(1000))
-        // Ngoài dải thì kẹp về 125..1000.
-        assertEquals(8L, Config.pollIntervalMs(60))
+        // 0 = NO LIMIT: không gộp MOVE.
+        assertEquals(0L, Config.pollIntervalMs(0))
+        // Ngoài dải thì kẹp 1..20ms.
         assertEquals(1L, Config.pollIntervalMs(2000))
+    }
+
+    @Test
+    fun pollDelayMs_neverZero() {
+        // Vòng poll app: tối thiểu 1ms để không quay chặt khi NO LIMIT.
+        assertEquals(1L, Config.pollDelayMs(0))
+        assertEquals(16L, Config.pollDelayMs(60))
+        assertEquals(1L, Config.pollDelayMs(1000))
+    }
+
+    // ── Build-11: thang UI 1..100 ──
+
+    @Test
+    fun sensFactor_uiToEngine() {
+        assertEquals(0.05f, Config.sensFactor(1), 0.001f)
+        assertEquals(1.0f, Config.sensFactor(20), 0.001f)
+        assertEquals(5.0f, Config.sensFactor(100), 0.001f)
+        // Ngoài thang thì kẹp.
+        assertEquals(0.05f, Config.sensFactor(0), 0.001f)
+        assertEquals(5.0f, Config.sensFactor(200), 0.001f)
+    }
+
+    @Test
+    fun sensUiValue_engineToUi() {
+        assertEquals(20, Config.sensUiValue(1.0f))
+        assertEquals(2, Config.sensUiValue(0.1f))
+        assertEquals(100, Config.sensUiValue(5.0f))
+        assertEquals(50, Config.sensUiValue(2.5f))
+    }
+
+    @Test
+    fun dampLevel_uiToEngine() {
+        assertEquals(1.0f, Config.dampLevel(1), 0.001f)
+        assertEquals(2.0f, Config.dampLevel(12), 0.001f)
+        assertEquals(10.0f, Config.dampLevel(100), 0.001f)
+    }
+
+    @Test
+    fun dampAlpha_uiToEma() {
+        assertEquals(1.0f, Config.dampAlpha(1), 0.001f) // mức 1 = không làm mượt
+        assertEquals(0.5f, Config.dampAlpha(12), 0.001f)
+        assertEquals(0.1f, Config.dampAlpha(100), 0.001f) // đầm nhất
+    }
+
+    @Test
+    fun dampUiValue_oldLevelToUi() {
+        assertEquals(1, Config.dampUiValue(1))
+        assertEquals(45, Config.dampUiValue(5))
+        assertEquals(100, Config.dampUiValue(10))
     }
 }

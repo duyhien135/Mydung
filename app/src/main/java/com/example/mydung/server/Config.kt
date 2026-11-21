@@ -1,5 +1,7 @@
 package com.example.mydung.server
 
+import kotlin.math.roundToInt
+
 /**
  * Mọi hằng số chỉnh được của dự án gom ở đây (GĐ3; GĐ4/GĐ5 thêm vào file này).
  * Không rải số cứng trong code.
@@ -62,6 +64,9 @@ object Config {
     const val CAM_HALF_H = 0.32f
     const val CAM_RADIUS_MIN = 0.02f
     const val CAM_RADIUS_MAX = 0.12f
+    // Độ nhạy engine (hệ số nhân delta chuột, dùng trong TouchLayout /
+    // TouchMapper): 1.0 = mặc định. UI hiển thị thang 1..100 (xem
+    // SENS_UI_* bên dưới) rồi đổi sang hệ số bằng sensFactor().
     const val SENS_X = 1.0f
     const val SENS_Y = 1.0f
     const val MAP_TOGGLE_KEY = LinuxKey.F8
@@ -69,9 +74,14 @@ object Config {
     // Chế độ con trỏ: chuột di chuyển 1 con trỏ ảo, chuột trái bấm tại
     // vị trí con trỏ (để bấm giao diện game); nhìn tự do: chuột kéo camera.
     const val CURSOR_TOGGLE_KEY = LinuxKey.F9
-    // Build-9: phím ẩn/hiện lớp phủ mặc định (F10 — tránh F8 bật/tắt MAP,
-    // F9 đổi chế độ con trỏ). Gán lại được trong bảng Cài đặt của nút K.
-    const val OVERLAY_TOGGLE_KEY = LinuxKey.F10
+    // Build-11: phím ẩn/hiện lớp phủ mặc định là F1 (gần tay trái khu
+    // WASD hơn F10 cũ — người dùng chê F10 xa quá). Gán lại được trong
+    // bảng Cài đặt của nút K. Profile cũ đã lưu overlayKey thì giữ nguyên
+    // giá trị đã lưu (kể cả F10); chỉ profile chưa từng gán mới dùng F1.
+    const val OVERLAY_TOGGLE_KEY = LinuxKey.F1
+    // Build-11: phím bật/tắt chuột (mặc định CHƯA GÁN = 0; mã phím Linux
+    // thật luôn > 0 nên 0 là sentinel an toàn). Gán trong bảng chỉnh camera.
+    const val MOUSE_TOGGLE_KEY_UNBOUND = 0
 
     // Camera: khi chuột ra khỏi vùng thì tự nhấc rồi chạm lại ở rìa ĐỐI
     // DIỆN (không phải tâm) để mỗi lần vuốt đi được hết chiều rộng vùng.
@@ -128,24 +138,71 @@ object Config {
     const val FG_POLL_MS = 1_000L // quét app foreground mỗi 1 giây
     const val FG_QUEUE_CAPACITY = 16 // hàng đợi đẩy FG về app (sự kiện hiếm)
 
-    // Build-9: tần số quét chuột (polling rate) — TỐC ĐỘ XỬ LÝ NỘI BỘ của
+    // Build-11: tần số quét chuột (polling rate) — TỐC ĐỘ XỬ LÝ NỘI BỘ của
     // app (chu kỳ thăm dò vị trí con trỏ + gộp MOVE tiêm), KHÔNG phải
     // polling rate phần cứng của chuột USB (app không đổi được cái đó).
-    // 125Hz→8ms, 250Hz→4ms, 500Hz→2ms, 1000Hz→1ms. Mặc định 500Hz.
-    val POLL_RATES = listOf(125, 250, 500, 1000)
+    // 60Hz→16ms, 125Hz→8ms, 250Hz→4ms, 500Hz→2ms, 1000Hz→1ms,
+    // NO LIMIT (0)→0ms: không gộp MOVE, tiêm ngay mỗi sự kiện.
+    // Mặc định 500Hz. Chỉnh trong bảng chỉnh camera (trình sửa).
+    val POLL_RATES = listOf(60, 125, 250, 500, 1000)
+    const val POLL_RATE_NO_LIMIT = 0
     const val DEFAULT_POLL_RATE_HZ = 500
 
-    /** Chu kỳ xử lý (ms) theo tần số quét: kẹp 1..8ms. */
+    /** Chu kỳ xử lý (ms) theo tần số quét: NO LIMIT -> 0 (không gộp); còn
+     *  lại kẹp 1..20ms (60Hz -> 16ms). */
     fun pollIntervalMs(hz: Int): Long =
-        (1000L / hz.coerceIn(POLL_RATES.first(), POLL_RATES.last())).coerceIn(1L, 8L)
+        if (hz <= 0) 0L else (1000L / hz.coerceIn(POLL_RATES.first(), POLL_RATES.last())).coerceIn(1L, 20L)
 
-    // Build-9: Đầm tâm (aim damping) — làm mượt delta chuột REL theo từng
-    // trục bằng EMA: alpha = 1/mức. Mức 1 = không làm mượt (delta thô);
-    // mức cao = đầm hơn, bớt rung nhưng phản hồi chậm hơn và chuyển động
-    // nhanh bị nén lại (bù bằng độ nhạy).
+    /** Độ trễ thăm dò MAPSTATUS ở app (ms): như pollIntervalMs nhưng tối
+     *  thiểu 1ms để vòng poll không quay chặt khi NO LIMIT. */
+    fun pollDelayMs(hz: Int): Long = pollIntervalMs(hz).coerceAtLeast(1L)
+
+    // Build-11: thang độ nhạy / đầm tâm 1..100 (trước: nhạy 0.1..5.0,
+    // đầm 1..10 — người dùng chê thang cũ nhỏ quá).
+    // Độ nhạy: hệ số engine = giá trị UI / 20 (tuyến tính):
+    //   1 -> 0.05 (rất chậm), 20 -> 1.0 (mặc định cũ), 100 -> 5.0 (nhanh nhất).
+    // Đầm tâm (Kháng nhạy): mức đầm engine = 1 + (giá trị UI - 1) / 11
+    //   (1 -> 1.0, 100 -> 10.0); EMA alpha = 1 / mức đầm:
+    //   1 -> alpha 1.0 (không làm mượt = "Tắt"), 100 -> alpha 0.1 (đầm nhất).
+    const val SENS_UI_MIN = 1
+    const val SENS_UI_MAX = 100
+    const val SENS_UI_DEFAULT = 20
     const val DAMP_MIN = 1
-    const val DAMP_MAX = 10
+    const val DAMP_MAX = 100
     const val DAMP_DEFAULT = 1
+
+    /** Đổi giá trị độ nhạy UI (1..100) sang hệ số engine (0.05..5.0). */
+    fun sensFactor(uiValue: Int): Float =
+        uiValue.coerceIn(SENS_UI_MIN, SENS_UI_MAX) / 20f
+
+    /** Đổi hệ số engine cũ (0.1..5.0) sang thang UI 1..100 (migrate profile v1). */
+    fun sensUiValue(factor: Float): Int =
+        (factor * 20f).roundToInt().coerceIn(SENS_UI_MIN, SENS_UI_MAX)
+
+    /** Đổi giá trị đầm tâm UI (1..100) sang mức đầm engine (1.0..10.0). */
+    fun dampLevel(uiValue: Int): Float =
+        1f + (uiValue.coerceIn(DAMP_MIN, DAMP_MAX) - 1) / 11f
+
+    /** Hệ số EMA alpha theo giá trị đầm tâm UI (1..100): 1 -> 1.0, 100 -> 0.1. */
+    fun dampAlpha(uiValue: Int): Float = 1f / dampLevel(uiValue)
+
+    /** Đổi mức đầm cũ (1..10) sang thang UI 1..100 (migrate profile v1):
+     *  1 -> 1, 10 -> 100, tuyến tính ở giữa (mỗi mức cũ = 11 mức mới). */
+    fun dampUiValue(oldLevel: Int): Int =
+        (1 + (oldLevel.coerceIn(1, 10) - 1) * 11).coerceIn(DAMP_MIN, DAMP_MAX)
+
+    // Build-11: giới hạn vùng di chuyển của con trỏ ảo (bảng chỉnh camera,
+    // như K7XD). TẮT = không giới hạn (toàn màn hình); TOÀN MÀN = cả màn
+    // hình (hiệu ứng giống TẮT, giữ lại cho đủ lựa chọn như K7XD); MÀN
+    // PHẢI = chỉ nửa phải màn hình (x >= 50% chiều rộng).
+    const val CURSOR_REGION_OFF = 0
+    const val CURSOR_REGION_FULL = 1
+    const val CURSOR_REGION_RIGHT = 2
+    const val CURSOR_REGION_DEFAULT = CURSOR_REGION_OFF
+
+    // Build-11: double-tap mở bảng chỉnh nút — 2 lần chạm cùng 1 phần tử
+    // trong ngưỡng này thì tính là double-tap (xem DoubleTapDetector).
+    const val DOUBLE_TAP_TIMEOUT_MS = 300L
 
     // Build-9: Tự động Tap / Thả Tap / Macro.
     const val AUTO_TAP_HOLD_MS = 40L // mỗi lần tap giữ ngón 40ms rồi nhả
