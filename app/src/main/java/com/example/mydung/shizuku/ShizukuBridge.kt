@@ -9,8 +9,11 @@ import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import com.example.mydung.BuildConfig
+import com.example.mydung.PairingState
+import com.example.mydung.server.ShizukuNewProcess
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -24,9 +27,11 @@ import rikka.shizuku.Shizuku
 /**
  * Cầu nối Shizuku (theo mẫu chính thức của Shizuku-API 13.1.5).
  *
- * Shizuku 13.x KHÔNG còn cho app gọi Shizuku.newProcess() (đã private) —
- * cách duy nhất là bind UserService ([ShellService]) chạy bằng quyền shell
- * rồi gọi exec() qua AIDL. Luồng:
+ * Đường chính là bind UserService ([ShellService]) chạy bằng quyền shell
+ * rồi gọi exec() qua AIDL. Shizuku.newProcess() đã private từ 13.x nên chỉ
+ * dùng làm FALLBACK bằng reflection (xem [ShizukuNewProcess]) khi bind
+ * UserService lỗi (timeout/binder hỏng) — lệnh chưa chạy nên thử lại an
+ * toàn. Luồng đường chính:
  *
  * 1. Người dùng cài + khởi động app Shizuku (bằng gỡ lỗi không dây hoặc root).
  * 2. App xin quyền qua Shizuku.requestPermission() (hộp thoại do app Shizuku hiện).
@@ -56,7 +61,10 @@ object ShizukuBridge {
     }
 
     private const val REQUEST_CODE = 0x5A1C
-    private const val BIND_TIMEOUT_MS = 35_000L // server tự xóa record sau 30s nếu bind không xong
+    // Callback bind hoặc về nhanh hoặc không bao giờ về — 35s chỉ kéo dài
+    // chu trình lỗi (máy thật 21/11/2026: các timeout 35s xếp chồng khiến
+    // 1 lần khởi động Server mất ~10 phút mới báo lỗi).
+    private const val BIND_TIMEOUT_MS = 10_000L
 
     private val _state = MutableStateFlow<State>(State.NotRunning)
     val state: StateFlow<State> = _state.asStateFlow()
@@ -77,20 +85,36 @@ object ShizukuBridge {
      */
     private var permissionRequested = false
 
+    /**
+     * Version cho UserServiceArgs: PHẢI đổi mỗi build (lấy từ BUILD_TIME
+     * sinh lúc build, xem app/build.gradle.kts) để Shizuku server không
+     * dùng lại bản ghi service cũ — versionCode 4 không đổi giữa các lần
+     * cài debug là 1 phần của lỗi bind timeout trên máy thật (21/11/2026).
+     * Ép về Int dương (version() nhận Int).
+     */
+    private fun userServiceVersion(): Int =
+        (BuildConfig.USER_SERVICE_VERSION % Int.MAX_VALUE).toInt()
+
     private val userServiceArgs = Shizuku.UserServiceArgs(
         ComponentName(BuildConfig.APPLICATION_ID, ShellService::class.java.name),
     )
-        .daemon(true) // giữ service sống để lần mở app sau bind lại ngay
+        // daemon(false): service chết khi unbind, không giữ bản ghi cũ qua
+        // các lần mở app (daemon(true) + tag cố định + version không đổi
+        // là kiểu dễ dính bản ghi trỏ tới binder tiến trình cũ).
+        .daemon(false)
         .processNameSuffix("shell") // BẮT BUỘC, thiếu là NPE trong Shizuku
-        .debuggable(BuildConfig.DEBUG)
+        // KHÔNG set debuggable: nghi ngờ gây lỗi bind trên 1 số máy.
         .tag("keytouch-shell") // ổn định dù R8 đổi tên class
-        .version(BuildConfig.VERSION_CODE) // đổi version -> server khởi động lại service
+        .version(userServiceVersion()) // đổi version -> server khởi động lại service
 
     private val connection = object : ServiceConnection {
         // Cả 2 callback đều được Shizuku post lên luồng chính.
         override fun onServiceConnected(name: ComponentName, binder: IBinder?) {
             if (binder == null || !binder.pingBinder()) {
-                pendingBind?.completeExceptionally(IllegalStateException("invalid binder for $name"))
+                PairingState.log("❌ Shizuku: binder UserService không hợp lệ (null hoặc pingBinder=false).")
+                pendingBind?.completeExceptionally(
+                    ShizukuBindException("UserService bind trả về binder không hợp lệ"),
+                )
                 pendingBind = null
                 return
             }
@@ -98,10 +122,12 @@ object ShizukuBridge {
             service = svc
             pendingBind?.complete(svc)
             pendingBind = null
+            PairingState.log("✅ Shizuku: UserService đã bind (pingBinder=true).")
             _state.update { s -> if (s is State.Ready) s.copy(serviceBound = true) else s }
         }
 
         override fun onServiceDisconnected(name: ComponentName) {
+            PairingState.log("⚠ Shizuku: UserService đã ngắt kết nối.")
             service = null
             _state.update { s -> if (s is State.Ready) s.copy(serviceBound = false) else s }
         }
@@ -110,8 +136,9 @@ object ShizukuBridge {
     private val binderReceived = Shizuku.OnBinderReceivedListener { refreshState() }
 
     private val binderDead = Shizuku.OnBinderDeadListener {
+        PairingState.log("❌ Shizuku: binder chết (Shizuku server đã dừng/bị giết).")
         service = null
-        pendingBind?.completeExceptionally(IllegalStateException("Shizuku binder died"))
+        pendingBind?.completeExceptionally(ShizukuBindException("Shizuku binder chết trong lúc bind"))
         pendingBind = null
         pendingPermission?.complete(false)
         pendingPermission = null
@@ -198,13 +225,33 @@ object ShizukuBridge {
         val deferred = CompletableDeferred<IShellService>()
         pendingBind = deferred
         return try {
-            // bindUserService trả void (không có giá trị trả về) — bind lỗi
-            // thì ServiceConnection.onServiceDisconnected hoặc timeout 35s
-            // sẽ báo; không check được ngay như hàm trả boolean.
+            // Dọn bản ghi UserService cũ TRƯỚC mỗi lần bind: Shizuku server
+            // có thể giữ bản ghi trỏ tới binder của tiến trình cũ, khiến lần
+            // bind sau không bao giờ gọi lại onServiceConnected.
+            // unbind(remove=true) xóa bản ghi + giết tiến trình cũ. Chỉ tới
+            // đây khi chưa có service sống (đã return sớm ở trên) nên unbind
+            // này an toàn. Lỗi unbind (chưa từng bind) thì bỏ qua.
+            PairingState.log(
+                "🔌 Shizuku: bind UserService (Shizuku API ${st.version}, uid ${st.uid}, " +
+                    "serviceVersion ${userServiceVersion()})...",
+            )
             withContext(Dispatchers.Main) {
+                runCatching { Shizuku.unbindUserService(userServiceArgs, connection, true) }
+                // bindUserService trả void (không có giá trị trả về) — bind
+                // lỗi thì ServiceConnection.onServiceDisconnected hoặc
+                // timeout sẽ báo; không check được ngay như hàm trả boolean.
                 Shizuku.bindUserService(userServiceArgs, connection)
             }
             withTimeout(BIND_TIMEOUT_MS) { deferred.await() }
+        } catch (e: TimeoutCancellationException) {
+            // Chỉ timeout của withTimeout mới tới đây (hủy từ bên ngoài ném
+            // CancellationException khác, không bị nuốt). Gói lại thành
+            // ShizukuBindException để exec() nhận diện và fallback newProcess.
+            pendingBind = null
+            val msg = "UserService bind timeout sau ${BIND_TIMEOUT_MS}ms " +
+                "(onServiceConnected không gọi lại; Shizuku API ${st.version})"
+            PairingState.log("❌ Shizuku: $msg")
+            throw ShizukuBindException(msg, e)
         } catch (t: Throwable) {
             pendingBind = null
             throw t
@@ -213,21 +260,38 @@ object ShizukuBridge {
 
     /**
      * Chạy `sh -c cmd` bằng quyền shell (uid 2000, hoặc 0 nếu Shizuku chạy bằng root).
-     * Mã thoát khác 0 trả về failure (ShellException mang theo stdout/stderr).
-     * Binder chết giữa chừng (Shizuku khởi động lại / bị giết) thì bind lại
-     * rồi thử lại 1 lần; vẫn lỗi thì trả failure (không crash).
+     *
+     * Thứ tự thử:
+     * 1. UserService + AIDL (đường chính).
+     * 2. Binder chết giữa chừng (Shizuku khởi động lại / bị giết) thì bind
+     *    lại rồi thử lại 1 lần qua UserService.
+     * 3. Bind lỗi (timeout / binder không hợp lệ): lệnh CHƯA BAO GIỜ chạy
+     *    nên an toàn fallback sang Shizuku.newProcess (reflection).
+     *
+     * Lệnh đã chạy mà exit != 0 (ShellException) thì KHÔNG thử lại dưới mọi
+     * hình thức — chạy lại 2 lần sẽ khởi động 2 Server.
      */
-    suspend fun exec(cmd: String, timeoutMs: Int = 15_000): Result<String> =
-        runCatching { execOnce(cmd, timeoutMs) }
-            .recoverCatching { e ->
-                // DeadObjectException (binder chết) là RemoteException; lỗi
-                // khác (vd ShellException do exit != 0) thì không thử lại.
-                val isBinderDeath = e is android.os.RemoteException ||
-                    generateSequence(e.cause) { it.cause }.any { it is android.os.RemoteException }
-                if (!isBinderDeath) throw e
-                service = null
-                execOnce(cmd, timeoutMs)
+    suspend fun exec(cmd: String, timeoutMs: Int = 15_000): Result<String> {
+        val first = runCatching { execOnce(cmd, timeoutMs) }
+        if (first.isSuccess) return first
+        var e = first.exceptionOrNull()!!
+        // Binder chết giữa chừng: bind lại rồi thử lại 1 lần qua UserService.
+        val isBinderDeath = e is android.os.RemoteException ||
+            generateSequence(e.cause) { it.cause }.any { it is android.os.RemoteException }
+        if (isBinderDeath) {
+            service = null
+            val second = runCatching { execOnce(cmd, timeoutMs) }
+            if (second.isSuccess) return second
+            e = second.exceptionOrNull()!!
+        }
+        if (e is ShizukuBindException) {
+            PairingState.log("⚠ UserService bind lỗi (${e.message}), fallback sang Shizuku.newProcess.")
+            return runCatching {
+                withContext(Dispatchers.IO) { ShizukuNewProcess.exec(cmd, timeoutMs) }
             }
+        }
+        return Result.failure(e)
+    }
 
     private suspend fun execOnce(cmd: String, timeoutMs: Int): String {
         val svc = bindService()
@@ -291,4 +355,12 @@ object ShizukuBridge {
 
     class ShellException(val exitCode: Int, val stdout: String, val stderr: String) :
         RuntimeException("exit $exitCode: ${stderr.ifBlank { stdout }.trim()}")
+
+    /**
+     * Lỗi ở bước bind UserService (timeout / binder không hợp lệ / binder
+     * chết trong lúc bind): lệnh CHƯA BAO GIỜ chạy nên [exec] được phép
+     * fallback sang newProcess. Khác [ShellException] (lệnh đã chạy rồi).
+     */
+    class ShizukuBindException(message: String, cause: Throwable? = null) :
+        RuntimeException(message, cause)
 }

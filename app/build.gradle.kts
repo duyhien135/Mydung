@@ -45,6 +45,13 @@ android {
         versionName = "1.1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // UserService Shizuku: version PHẢI đổi mỗi build (lấy giờ build)
+        // để Shizuku server không dùng lại bản ghi service cũ — versionCode
+        // không đổi giữa các lần cài debug là 1 phần của lỗi bind timeout
+        // 35s trên máy thật (21/11/2026). ShizukuBridge dùng qua
+        // BuildConfig.USER_SERVICE_VERSION (ép về Int, xem userServiceVersion).
+        buildConfigField("long", "USER_SERVICE_VERSION", "${System.currentTimeMillis()}L")
     }
 
     buildTypes {
@@ -75,7 +82,8 @@ android {
         // AIDL: bắt buộc để biên dịch IShellService.aidl (Shizuku UserService).
         // AGP 8+ mặc định tắt aidl.
         aidl = true
-        // BuildConfig: ShizukuBridge dùng APPLICATION_ID / VERSION_CODE / DEBUG.
+        // BuildConfig: ShizukuBridge dùng APPLICATION_ID / DEBUG /
+        // USER_SERVICE_VERSION (version đổi mỗi build cho UserServiceArgs).
         buildConfig = true
     }
 }
@@ -96,8 +104,10 @@ dependencies {
     implementation("org.conscrypt:conscrypt-android:2.5.3")
 
     // Shizuku: kích hoạt Server bằng quyền shell không cần ADB (13.1.5 là bản
-    // mới nhất trên Maven Central; newProcess đã private từ 13.0 nên dùng
-    // UserService + AIDL, xem shizuku/ShizukuBridge.kt).
+    // mới nhất trên Maven Central; đường chính là UserService + AIDL, còn
+    // newProcess (đã private từ 13.0) chỉ dùng làm fallback bằng reflection
+    // khi bind UserService lỗi — xem shizuku/ShizukuBridge.kt và
+    // server/ShizukuNewProcess.kt).
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
     testImplementation(libs.junit)

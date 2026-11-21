@@ -1,6 +1,5 @@
 package com.example.mydung.shizuku
 
-import android.content.Context
 import android.os.Bundle
 import androidx.annotation.Keep
 import java.io.File
@@ -12,10 +11,13 @@ import kotlin.system.exitProcess
  * Shizuku khởi động bằng ADB, uid 0 nếu bằng root).
  *
  * Shizuku server tự tạo instance bằng reflection: thử constructor (Context)
- * trước, không có thì dùng constructor không tham số — cả 2 phải public và
- * @Keep (R8 không được đổi tên/xóa). Context nhận được là 1 Application
- * trần (không phải Application của app, onCreate() của app không chạy) nên
- * đừng dùng singleton của app trong này.
+ * trước, không có thì dùng constructor không tham số. Class này CHỈ có
+ * constructor không tham số (cố tình): tiến trình này không phải tiến trình
+ * ứng dụng hợp lệ, Context nhận được là 1 Application trần (onCreate() của
+ * app không chạy, nhiều API của Context không hoạt động) nên chạm vào
+ * Context/singleton của app trong constructor có thể ném lỗi và khiến bind
+ * không bao giờ hoàn thành. Constructor + class phải public và @Keep (R8
+ * không được đổi tên/xóa).
  *
  * KHÔNG khai báo <service> cho class này trong Manifest: Shizuku server
  * không đọc Manifest, nó tự spawn bằng app_process với classloader của APK.
@@ -23,11 +25,8 @@ import kotlin.system.exitProcess
 @Keep
 class ShellService : IShellService.Stub {
 
-    constructor() : super()
-
     @Keep
-    @Suppress("unused")
-    constructor(context: Context) : super()
+    constructor() : super()
 
     override fun exec(command: String, timeoutMs: Int): Bundle {
         val proc = ProcessBuilder("sh", "-c", command)

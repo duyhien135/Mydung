@@ -43,7 +43,9 @@ enum class ServerStatus {
 /**
  * Giai đoạn khởi động Server bị kẹt (chẩn đoán cho màn hình chính):
  * tiến trình chết / cổng chưa lắng nghe / bắt tay thất bại / hết giờ /
- * đã có Server cũ còn chạy mà không dừng được.
+ * đã có Server cũ còn chạy mà không dừng được / không chạy được lệnh shell
+ * để kiểm tra (vd Shizuku bind UserService timeout — trường hợp này KHÔNG
+ * được kết luận là PORT_CLOSED vì thực ra không kiểm tra được gì).
  */
 enum class ServerStartStage(val labelVi: String) {
     PROCESS_DEAD("Tiến trình Server đã chết"),
@@ -51,6 +53,7 @@ enum class ServerStartStage(val labelVi: String) {
     HANDSHAKE_FAILED("Cổng đã mở nhưng bắt tay thất bại"),
     TIMEOUT("Hết thời gian chờ"),
     STALE_SERVER("Đã có Server cũ đang chạy"),
+    EXEC_FAILED("Không chạy được lệnh shell (Shizuku bind lỗi)"),
 }
 
 data class ServerInfo(
@@ -451,12 +454,14 @@ object ServerManager {
                         }
                         // Tiến trình còn sống không? Kiểm tra mỗi 2s; chết thì
                         // dừng sớm (kiểm tra lại 1 lần sau 1s để khỏi kết luận
-                        // vội vì lệnh ps chậm).
+                        // vội vì lệnh ps chậm). Chỉ dừng khi CHẮC CHẮN chết
+                        // (== false); null = không kiểm tra được (lệnh ps
+                        // lỗi) thì cứ thăm dò tiếp (fail-open).
                         if (elapsed - lastProcessCheckMs >= Config.SERVER_PROCESS_CHECK_MS) {
                             lastProcessCheckMs = elapsed
-                            if (!isServerProcessAlive(executor)) {
+                            if (isServerProcessAlive(executor) == false) {
                                 delay(1000)
-                                if (!isServerProcessAlive(executor)) {
+                                if (isServerProcessAlive(executor) == false) {
                                     PairingState.log("❌ Tiến trình mydung_server đã chết — dừng thăm dò sớm, đọc log xem nguyên nhân.")
                                     processDead = true
                                     break
@@ -486,15 +491,28 @@ object ServerManager {
                         }
                         return@launch
                     } else {
-                        // Chẩn đoán theo giai đoạn: (1) tiến trình còn sống
+                        // Chẩn đoán theo giai đoạn: (0) có chạy được lệnh
+                        // shell để kiểm tra không, (1) tiến trình còn sống
                         // không, (2) cổng đã lắng nghe chưa, (3) bắt tay có
                         // thành công không. Kèm 25 dòng cuối của log Server.
+                        // Lưu ý: processAlive == null (lệnh ps lỗi, vd
+                        // Shizuku bind timeout) thì báo EXEC_FAILED — KHÔNG
+                        // được kết luận PORT_CLOSED như trước (fail-open
+                        // khiến app báo sai "tiến trình sống" trong khi
+                        // thực ra không kiểm tra được gì).
                         val logTail = readLogTailLines(executor)
                         val stage: ServerStartStage
                         val detail: String
-                        if (processDead || !isServerProcessAlive(executor)) {
+                        val processAlive = isServerProcessAlive(executor)
+                        if (processDead || processAlive == false) {
                             stage = ServerStartStage.PROCESS_DEAD
                             detail = "Tiến trình Server chết ngay sau khi khởi động (xem log bên dưới)."
+                        } else if (processAlive == null) {
+                            stage = ServerStartStage.EXEC_FAILED
+                            detail = "Không chạy được lệnh shell qua ${executor.label} " +
+                                "(lệnh kiểm tra tiến trình lỗi — có thể Shizuku bind " +
+                                "UserService timeout) nên không biết Server có chạy " +
+                                "không. Xem log bên dưới."
                         } else if (!probePort(port)) {
                             stage = ServerStartStage.PORT_CLOSED
                             detail = "Tiến trình còn sống nhưng cổng $port chưa lắng nghe (Server chưa bind xong hoặc bind lỗi)."
@@ -680,17 +698,18 @@ object ServerManager {
     }
 
     /** Tiến trình Server (tên mydung_server, đặt bằng --nice-name) còn sống không.
-     *  [failOpen] = true (mặc định): không kiểm tra được thì coi như còn sống
-     *  để khỏi dừng thăm dò sớm oan. reapStaleServer dùng failOpen = false:
-     *  không kiểm tra được thì coi như không có Server cũ, cứ khởi động bản
-     *  mới (kẻo kẹt ở bước dọn vì lỗi ps). */
-    private suspend fun isServerProcessAlive(executor: ShellExecutor, failOpen: Boolean = true): Boolean {
+     *  Tri-state: true = còn sống, false = đã chết, null = KHÔNG KIỂM TRA
+     *  ĐƯỢC (lệnh ps lỗi, vd Shizuku bind timeout). Bên gọi tự quyết theo
+     *  null: vòng thăm dò coi null như còn sống (fail-open, cứ đợi tiếp);
+     *  reapStaleServer coi null như sạch (fail-closed, cứ chạy bản mới);
+     *  khối chẩn đoán cuối báo EXEC_FAILED (không kết luận bừa). */
+    private suspend fun isServerProcessAlive(executor: ShellExecutor): Boolean? {
         return try {
             // [m]ydung_server: mẹo grep tự loại chính lệnh grep khỏi kết quả.
             val out = executor.run("ps -A | grep [m]ydung_server")
             out.isNotBlank()
         } catch (_: Exception) {
-            failOpen
+            null
         }
     }
 
@@ -729,15 +748,16 @@ object ServerManager {
             }
         }
         // Tiến trình cũ còn sống không (kể cả khi không phản hồi cổng)?
-        // failOpen = false: không kiểm tra được thì coi như sạch, cứ chạy bản mới.
-        if (!isServerProcessAlive(executor, failOpen = false)) {
+        // != true: không kiểm tra được (null) thì coi như sạch, cứ chạy bản
+        // mới (fail-closed — kẻo kẹt ở bước dọn vì lỗi ps).
+        if (isServerProcessAlive(executor) != true) {
             if (port > 0) clearSavedServer(context)
             return StaleCheck.Clean
         }
         PairingState.log("⚠ Tiến trình mydung_server cũ còn sống — đang kill...")
         runCatching { executor.run("pkill -f mydung_server 2>/dev/null; true") }
         delay(1000)
-        if (!isServerProcessAlive(executor, failOpen = false)) {
+        if (isServerProcessAlive(executor) != true) {
             clearSavedServer(context)
             PairingState.log("Đã dừng Server cũ.")
             return StaleCheck.Clean
