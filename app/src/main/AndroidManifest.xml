@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
+    <!-- Android 13+ cần quyền thông báo cho RemoteInput -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Android 13+ cần quyền này cho NSD / mDNS -->
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
+        tools:targetApi="tiramisu" />
+
+    <!-- GĐ5: lớp phủ nổi + foreground service giữ lớp phủ -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!-- Viên "PIN" trên màn chính: xin miễn tối ưu pin để app không bị giết nền -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- GĐ5: liệt kê app có icon trên launcher để gán game cho profile -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <!-- Màn chính kiểm tra/mở app Shizuku -->
+        <package android:name="moe.shizuku.privileged.api" />
+    </queries>
+
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="KeyTouch"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+        </activity>
+
+        <!-- Receiver nhận mã ghép cặp từ thông báo RemoteInput -->
+        <receiver
+            android:name=".PairingNotificationReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.example.mydung.ACTION_PAIRING_CODE" />
+            </intent-filter>
+        </receiver>
+
+        <!-- GĐ5: foreground service giữ lớp phủ chơi/chỉnh nút -->
+        <service
+            android:name=".OverlayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Lớp phủ chỉnh nút chơi game" />
+        </service>
+
+        <!-- Giữ tiến trình app sống để heartbeat tới Server không chết khi
+             app ở nền (HyperOS giết app nền mạnh; mất heartbeat 10s thì MAP
+             tự tắt giữa trận). Chạy khi Server đang chạy, dừng khi Server dừng. -->
+        <service
+            android:name=".ServerKeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Giữ kết nối tới Server chơi game" />
+        </service>
+
+        <!-- Shizuku: bắt buộc để nhận binder từ Shizuku server. KHÔNG đặt
+             android:process. android:exported phải true, multiprocess phải
+             false (ShizukuProvider tự kiểm tra lúc chạy). Quyền
+             moe.shizuku.manager.permission.API_V23 do provider AAR tự merge. -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+    </application>
+</manifest>

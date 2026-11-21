@@ -1,0 +1,12 @@
+# Android
+*.iml
+.gradle/
+local.properties
+.idea/
+build/
+app/build/
+# Keystore debug giải mã từ debug.keystore.b64 lúc cấu hình, không commit
+debug.keystore
+# Sync metadata của Muse (không đẩy lên GitHub)
+*.muse-github-snapshot-sync.json
+*.muse-github-snapshot-sync.json.tmp-*
