@@ -60,9 +60,30 @@ object TouchProtocol {
         }
     }
 
+    /** Parse "POLLRATE <hz>" (build-9: 125/250/500/1000). Sai -> null. */
+    fun parsePollRate(line: String): Int? {
+        val p = line.trim().split("\\s+".toRegex())
+        if (p.size != 2 || p[0] != "POLLRATE") return null
+        val hz = p[1].toIntOrNull() ?: return null
+        return if (hz in Config.POLL_RATES) hz else null
+    }
+
+    /** Parse "OVERLAY 1|0" (build-9: app đặt trạng thái ẩn lớp phủ). Sai -> null. */
+    fun parseOverlay(line: String): Boolean? {
+        val p = line.trim().split("\\s+".toRegex())
+        if (p.size != 2 || p[0] != "OVERLAY") return null
+        return when (p[1]) {
+            "1" -> true
+            "0" -> false
+            else -> null
+        }
+    }
+
     /** Các khóa TOUCHCFG được chấp nhận. */
     val TOUCHCFG_KEYS = setOf(
         "sensX", "sensY", "joyX", "joyY", "joyR", "camX", "camY", "camHW", "camHH",
+        // Build-9: đầm tâm X/Y, tốc độ con trỏ, phím ẩn/hiện lớp phủ.
+        "dampX", "dampY", "cursorSpeed", "overlayKey",
     )
 
     /**
@@ -129,13 +150,15 @@ object TouchProtocol {
 
     /** Dòng trạng thái MAP trả về cho lệnh MAPSTATUS.
      *  mode: "camera" (nhìn tự do) hoặc "cursor" (con trỏ ảo); cursorX/Y là
-     *  vị trí con trỏ theo tỉ lệ màn hình (app vẽ chấm con trỏ khi mode=cursor). */
+     *  vị trí con trỏ theo tỉ lệ màn hình (app vẽ chấm con trỏ khi mode=cursor);
+     *  overlay=1: lớp phủ đang bị ẩn thủ công (keymap vẫn chạy ngầm). */
     fun formatMapStatus(
         mapOn: Boolean, display: DisplayInfo?, pointers: Int,
         latencyMs: Long, injectErr: Long, injectOk: Boolean,
         injector: String = InjectorMode.REFLECT.key,
         mode: String = "camera",
         cursorX: Float = 0.5f, cursorY: Float = 0.5f,
+        overlayHidden: Boolean = false,
     ): String {
         val d = display?.let { "${it.width}x${it.height}" } ?: "none"
         // Locale.US: dấu thập phân luôn là "." (locale vi dùng "," sẽ làm hỏng parse).
@@ -143,6 +166,6 @@ object TouchProtocol {
         val cy = String.format(Locale.US, "%.2f", cursorY)
         return "MAP map=${if (mapOn) 1 else 0} display=$d pointers=$pointers " +
             "latencyMs=$latencyMs injectErr=$injectErr injectOk=${if (injectOk) 1 else 0} " +
-            "injector=$injector mode=$mode cursor=$cx,$cy"
+            "injector=$injector mode=$mode cursor=$cx,$cy overlay=${if (overlayHidden) 1 else 0}"
     }
 }

@@ -9,7 +9,7 @@ class TouchMapperTest {
     // Màn hình 1000x500 để tính nhẩm dễ.
     private val layout = TouchLayout(
         joyX = 0.1f, joyY = 0.5f, joyR = 0.1f, // tâm (100, 250), bán kính 100px
-        camX = 0.5f, camY = 0.5f, camHW = 0.2f, camHH = 0.4f, // tâm (500, 250), vùng x 300..700, y 50..450
+        camX = 0.5f, camY = 0.5f, camHW = 0.2f, camHH = 0.4f, // tâm (500, 250), vùng TRÒN bán kính 200px (camHH không dùng trong logic tròn)
         sensX = 1f, sensY = 1f,
         buttons = mapOf(
             LinuxKey.SPACE to (0.9f to 0.5f), // (900, 250)
@@ -397,5 +397,204 @@ class TouchMapperTest {
         val (rx, ry) = m.cursorRatio()
         assertEquals(0f, rx, 0.001f)
         assertEquals(1f, ry, 0.001f)
+    }
+
+    // ── Build-9: camera tròn ──
+
+    @Test
+    fun camera_circle_diagonalOutsideCircleWraps() {
+        val (engine, m) = mapper()
+        m.setCursorMode(false, 0)
+        // Di chéo tới (690, 440): trong hình chữ nhật cũ (x<700, y<450) nhưng
+        // NGOÀI hình tròn (cách tâm 268px > bán kính 200px) -> lần di đầu
+        // bị kẹp vào biên tròn (641.42, 391.42).
+        m.process(move(190, 190, 100), 100)
+        val mv = engine.flushMove(100)
+        assertPoint(mv, TouchEngine.POINTER_CAMERA, 641.42f, 391.42f)
+        // Di tiếp ra ngoài: UP + hẹn DOWN ở điểm đối xứng qua tâm
+        // (hướng (0.707, 0.707) -> đối xứng (500-134.35, 250-134.35)).
+        val specs = m.process(move(10, 10, 110), 110)
+        assertEquals(1, specs.size)
+        assertEquals(TouchEngine.ACTION_UP, specs[0].action)
+        val down = m.tick(110 + Config.CAMERA_REPRESS_DELAY_MS)
+        assertEquals(1, down.size)
+        assertEquals(TouchEngine.ACTION_DOWN, down[0].action)
+        assertPoint(down[0], TouchEngine.POINTER_CAMERA, 365.65f, 115.65f)
+    }
+
+    // ── Build-9: đầm tâm (EMA) + tốc độ con trỏ ──
+
+    @Test
+    fun damping_level1_noSmoothing() {
+        val (_, m) = mapper() // damp mặc định 1
+        m.process(move(10, 10, 100), 100)
+        val (rx, ry) = m.cursorRatio()
+        assertEquals(0.51f, rx, 0.001f)
+        assertEquals(0.52f, ry, 0.001f)
+    }
+
+    @Test
+    fun damping_level2_halvesFirstDeltaThenAccumulates() {
+        val engine = TouchPointerSet()
+        val m = TouchMapper(engine, layout.copy(dampX = 2, dampY = 2), 1000, 500)
+        m.process(move(10, 0, 100), 100)
+        // EMA alpha=0.5: delta mượt = 5 -> con trỏ (505, 250).
+        assertEquals(0.505f, m.cursorRatio().first, 0.001f)
+        m.process(move(10, 0, 110), 110)
+        // Lần 2: mượt = 5 + (10-5)*0.5 = 7.5 -> con trỏ 512.5.
+        assertEquals(0.5125f, m.cursorRatio().first, 0.001f)
+    }
+
+    @Test
+    fun damping_separateAxes() {
+        val engine = TouchPointerSet()
+        val m = TouchMapper(engine, layout.copy(dampX = 1, dampY = 4), 1000, 500)
+        m.process(move(10, 8, 100), 100)
+        // X không làm mượt (10), Y alpha=0.25 -> 2.
+        val (rx, ry) = m.cursorRatio()
+        assertEquals(0.51f, rx, 0.001f)
+        assertEquals(0.504f, ry, 0.001f)
+    }
+
+    @Test
+    fun cursorSpeed_scalesCursorMovement() {
+        val engine = TouchPointerSet()
+        val m = TouchMapper(engine, layout.copy(cursorSpeed = 2f), 1000, 500)
+        m.process(move(10, 5, 100), 100)
+        val (rx, ry) = m.cursorRatio()
+        assertEquals(0.52f, rx, 0.001f)
+        assertEquals(0.52f, ry, 0.001f)
+    }
+
+    @Test
+    fun cursorMode_ignoresSensitivity() {
+        // Chế độ con trỏ dùng cursorSpeed, KHÔNG dùng sensX/sensY (độ nhạy
+        // chỉ dùng cho camera ở chế độ nhìn tự do).
+        val engine = TouchPointerSet()
+        val m = TouchMapper(engine, layout.copy(sensX = 3f, sensY = 3f, cursorSpeed = 1f), 1000, 500)
+        m.process(move(10, 5, 100), 100)
+        val (rx, ry) = m.cursorRatio()
+        assertEquals(0.51f, rx, 0.001f)
+        assertEquals(0.51f, ry, 0.001f)
+    }
+
+    // ── Build-9: tự động tap / thả tap / macro ──
+
+    private fun autoTapMapper(): Pair<TouchPointerSet, TouchMapper> {
+        val engine = TouchPointerSet()
+        val l = layout.copy(
+            autoTaps = mapOf(
+                LinuxKey.Q to AutoTapSpec(0.5f, 0.5f, 100L), // (500, 250) mỗi 100ms
+            ),
+        )
+        return engine to TouchMapper(engine, l, 1000, 500)
+    }
+
+    @Test
+    fun autoTap_pressTapsImmediatelyAndRepeatsWhileHeld() {
+        val (engine, m) = autoTapMapper()
+        val down = m.process(key(LinuxKey.Q, true, 100), 100)
+        assertEquals(1, down.size)
+        assertEquals(TouchEngine.ACTION_DOWN, down[0].action)
+        assertPoint(down[0], 2, 500f, 250f)
+        // Hết 40ms giữ thì nhả.
+        val up = m.tick(140)
+        assertEquals(1, up.size)
+        assertEquals(TouchEngine.ACTION_UP, up[0].action)
+        // Đủ 100ms từ lần tap trước thì tap lại.
+        assertTrue(m.tick(199).isEmpty())
+        val down2 = m.tick(200)
+        assertEquals(1, down2.size)
+        assertEquals(TouchEngine.ACTION_DOWN, down2[0].action)
+        assertEquals(1, engine.count)
+        // Nhả phím thì dừng lặp (tap đang giữ vẫn nhả đúng hẹn).
+        assertTrue(m.process(key(LinuxKey.Q, false, 210), 210).isEmpty())
+        assertEquals(1, m.tick(240).size) // nhả lần tap thứ 2
+        assertTrue(m.tick(300).isEmpty())
+        assertTrue(m.tick(400).isEmpty())
+        assertEquals(0, engine.count)
+    }
+
+    private fun releaseTapMapper(): Pair<TouchPointerSet, TouchMapper> {
+        val engine = TouchPointerSet()
+        val l = layout.copy(releaseTaps = mapOf(LinuxKey.Q to (0.5f to 0.5f)))
+        return engine to TouchMapper(engine, l, 1000, 500)
+    }
+
+    @Test
+    fun releaseTap_tapsOnlyOnRelease() {
+        val (engine, m) = releaseTapMapper()
+        assertTrue(m.process(key(LinuxKey.Q, true, 100), 100).isEmpty()) // bấm: không làm gì
+        assertEquals(0, engine.count)
+        val down = m.process(key(LinuxKey.Q, false, 200), 200)
+        assertEquals(1, down.size)
+        assertEquals(TouchEngine.ACTION_DOWN, down[0].action)
+        assertPoint(down[0], 2, 500f, 250f)
+        val up = m.tick(240)
+        assertEquals(1, up.size)
+        assertEquals(TouchEngine.ACTION_UP, up[0].action)
+    }
+
+    @Test
+    fun releaseTap_strayReleaseIgnored() {
+        val (_, m) = releaseTapMapper()
+        assertTrue(m.process(key(LinuxKey.Q, false, 100), 100).isEmpty()) // nhả mà không bấm trước
+    }
+
+    private fun macroMapper(): Pair<TouchPointerSet, TouchMapper> {
+        val engine = TouchPointerSet()
+        val l = layout.copy(
+            macros = mapOf(
+                LinuxKey.Q to listOf(
+                    MacroStep(MacroStepKind.TAP, 0.5f, 0.5f),
+                    MacroStep(MacroStepKind.WAIT, ms = 100L),
+                    MacroStep(MacroStepKind.TAP, 0.8f, 0.8f),
+                ),
+            ),
+        )
+        return engine to TouchMapper(engine, l, 1000, 500)
+    }
+
+    @Test
+    fun macro_tapWaitTap_playsInOrder() {
+        val (engine, m) = macroMapper()
+        val down = m.process(key(LinuxKey.Q, true, 100), 100)
+        assertEquals(1, down.size)
+        assertPoint(down[0], 2, 500f, 250f) // bước 1: tap (500, 250)
+        // Hết 40ms giữ thì nhả, rồi chờ 100ms (bắt đầu tính từ lúc nhả = 140).
+        val up = m.tick(140)
+        assertEquals(1, up.size)
+        assertEquals(TouchEngine.ACTION_UP, up[0].action)
+        assertTrue(m.tick(239).isEmpty()) // đang chờ
+        val down2 = m.tick(240)
+        assertEquals(1, down2.size)
+        assertPoint(down2[0], 2, 800f, 400f) // bước 3: tap (800, 400)
+        val up2 = m.tick(280)
+        assertEquals(1, up2.size)
+        assertEquals(TouchEngine.ACTION_UP, up2[0].action)
+        assertTrue(m.tick(300).isEmpty()) // macro xong
+        assertEquals(0, engine.count)
+    }
+
+    @Test
+    fun macro_releaseCancelsMidWay() {
+        val (engine, m) = macroMapper()
+        m.process(key(LinuxKey.Q, true, 100), 100)
+        val up = m.process(key(LinuxKey.Q, false, 110), 110)
+        assertEquals(1, up.size)
+        assertEquals(TouchEngine.ACTION_UP, up[0].action)
+        assertTrue(m.tick(200).isEmpty()) // không chạy tiếp bước sau
+        assertEquals(0, engine.count)
+    }
+
+    @Test
+    fun macro_pressAgainRestartsFromBeginning() {
+        val (_, m) = macroMapper()
+        m.process(key(LinuxKey.Q, true, 100), 100)
+        m.tick(140) // nhả tap đầu, đang chờ
+        // Bấm lại trong lúc đang chạy: chạy lại từ đầu (tap đầu ngay).
+        val down = m.process(key(LinuxKey.Q, true, 150), 150)
+        assertEquals(1, down.size)
+        assertPoint(down[0], 2, 500f, 250f)
     }
 }

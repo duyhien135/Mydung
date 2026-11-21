@@ -77,6 +77,16 @@ object InputClient {
         return command(port, token, "CURSORMODE ${if (on) 1 else 0}")
     }
 
+    /** Đặt tần số quét chuột (build-9: 125/250/500/1000 Hz). Trả "OK POLLRATE <hz>". */
+    fun setPollRate(port: Int, token: String, hz: Int): String {
+        return command(port, token, "POLLRATE $hz")
+    }
+
+    /** Đặt trạng thái ẩn lớp phủ (build-9). Trả "OK OVERLAY 1|0". */
+    fun setOverlayHidden(port: Int, token: String, hidden: Boolean): String {
+        return command(port, token, "OVERLAY ${if (hidden) 1 else 0}")
+    }
+
     /** Lấy trạng thái MAP ("MAP map=1 display=... pointers=.. latencyMs=.. injectErr=.. injectOk=.."). */
     fun mapStatus(port: Int, token: String): String {
         return command(port, token, "MAPSTATUS")

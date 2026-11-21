@@ -52,11 +52,20 @@ import androidx.compose.ui.unit.sp
 import com.example.mydung.server.Config
 import com.example.mydung.server.ElementType
 import com.example.mydung.server.LinuxKey
+import com.example.mydung.server.MacroStep
+import com.example.mydung.server.MacroStepKind
 import com.example.mydung.server.Profile
+import com.example.mydung.server.ProfileCodec
 import com.example.mydung.server.ProfileElement
 import com.example.mydung.OverlayService
 import kotlinx.coroutines.flow.StateFlow
 import kotlin.math.roundToInt
+
+/** Các loại phần tử gán phím được (kiểm tra phím trùng + hàng "Gán phím"). */
+private val KEYED_TYPES = setOf(
+    ElementType.BUTTON, ElementType.SWIPE, ElementType.AUTO_TAP,
+    ElementType.RELEASE_TAP, ElementType.FREE_LOOK, ElementType.MACRO,
+)
 
 /**
  * Lớp phủ chỉnh nút (GĐ5, làm lại giao diện theo GG Mouse Pro): kéo thả phần
@@ -83,6 +92,9 @@ fun EditorOverlay(
     onRequestKeyCapture: (Int) -> Unit,
     onClearCaptured: () -> Unit,
     onCancelCapture: () -> Unit,
+    // Build-9: báo danh sách phần tử hiện tại cho Service (rời game khi đang
+    // chỉnh thì Service lưu từ đây, không cần composable còn sống).
+    onElementsChange: (List<ProfileElement>) -> Unit = {},
 ) {
     var elements by remember { mutableStateOf(profile.elements) }
     var selected by remember { mutableStateOf<Int?>(null) }
@@ -98,6 +110,9 @@ fun EditorOverlay(
     val currentElements by rememberUpdatedState(elements)
     val captureIndex by captureRequest.collectAsState()
     val captured by capturedKey.collectAsState()
+
+    // Báo danh sách hiện tại cho Service mỗi khi đổi (để lưu khi rời game).
+    LaunchedEffect(elements) { onElementsChange(elements) }
 
     fun pushUndo() {
         undoStack = (undoStack + listOf(currentElements)).takeLast(20)
@@ -162,8 +177,7 @@ fun EditorOverlay(
             return@LaunchedEffect
         }
         val dup = currentElements.indexOfFirst {
-            it.enabled && (it.type == ElementType.BUTTON || it.type == ElementType.SWIPE) &&
-                it.keyCode == code
+            it.enabled && it.keyCode == code && it.type in KEYED_TYPES
         }
         if (dup >= 0 && dup != index) {
             warning = "Phím ${LinuxKey.name(code)} đã gán cho \"${currentElements[dup].name}\"."
@@ -302,6 +316,20 @@ fun EditorOverlay(
                 },
                 enabled = undoStack.isNotEmpty() && captureIndex == null,
             ) { Text("↩ Hoàn tác", color = Color.White) }
+            // Build-9: Đặt lại về bố cục mặc định của game (như K7XD).
+            TextButton(
+                onClick = {
+                    pushUndo()
+                    val defaults = if (profile.packageName == "com.dts.freefiremax") {
+                        ProfileCodec.defaultFreeFireMax().elements
+                    } else {
+                        ProfileCodec.defaultFreeFire().elements
+                    }
+                    elements = defaults
+                    selected = null
+                },
+                enabled = captureIndex == null,
+            ) { Text("⟲ Đặt lại", color = Color.White) }
             Button(onClick = { onSave(profile.copy(elements = currentElements)) }) {
                 Text("Lưu")
             }
@@ -374,7 +402,7 @@ fun EditorOverlay(
                                 },
                             )
                         }
-                        if (e.type == ElementType.BUTTON || e.type == ElementType.SWIPE) {
+                        if (e.type in KEYED_TYPES) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
                                     text = "Phím: " + (e.keyCode?.let { LinuxKey.name(it) } ?: "Chưa gán"),
@@ -390,6 +418,59 @@ fun EditorOverlay(
                                     }
                                 }
                             }
+                        }
+                        if (e.type == ElementType.AUTO_TAP) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Khoảng tap", modifier = Modifier.width(80.dp))
+                                Slider(
+                                    value = e.intervalMs.toFloat(),
+                                    onValueChange = { v ->
+                                        if (!sliderUndoPushed) {
+                                            pushUndo()
+                                            sliderUndoPushed = true
+                                        }
+                                        updateElement(i, e.copy(intervalMs = v.toLong()))
+                                    },
+                                    onValueChangeFinished = { sliderUndoPushed = false },
+                                    valueRange = 50f..2000f,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text(
+                                    text = "${e.intervalMs}ms",
+                                    modifier = Modifier.width(64.dp),
+                                    textAlign = TextAlign.End,
+                                )
+                            }
+                            Text(
+                                "Giữ phím thì tap lặp tại vị trí này mỗi ${e.intervalMs}ms.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (e.type == ElementType.RELEASE_TAP) {
+                            Text(
+                                "Tap 1 cái tại vị trí này khi NHẢ phím (thay vì khi bấm).",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (e.type == ElementType.FREE_LOOK) {
+                            Text(
+                                "Bấm phím này để đổi giữa chế độ nhìn tự do (kéo camera) và " +
+                                    "con trỏ (như phím ${LinuxKey.name(profile.cursorToggleKey)}). " +
+                                    "Chỉ dùng phím bàn phím.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (e.type == ElementType.MACRO) {
+                            MacroStepEditor(
+                                element = e,
+                                onUpdate = { updated ->
+                                    pushUndo()
+                                    updateElement(i, updated)
+                                },
+                            )
                         }
                         if (e.type == ElementType.SWIPE) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -421,9 +502,11 @@ fun EditorOverlay(
                         }
                         if (e.type == ElementType.CAMERA) {
                             Text(
-                                "Vùng chuột kéo camera (nhìn tự do). Chuột ra khỏi vùng thì tự nhấc " +
-                                    "rồi chạm lại ở rìa đối diện để kéo tiếp không hết vùng. " +
-                                    "Phím ${LinuxKey.name(profile.cursorToggleKey)} chuyển sang chế độ con trỏ để bấm giao diện game.",
+                                "FPS Look — vòng tròn nhỏ để chuột kéo camera (nhìn tự do). " +
+                                    "Chuột ra khỏi vòng thì tự nhấc rồi chạm lại ở điểm đối xứng " +
+                                    "qua tâm để kéo tiếp không hết vùng. Phím " +
+                                    "${LinuxKey.name(profile.cursorToggleKey)} chuyển sang chế độ " +
+                                    "con trỏ để bấm giao diện game.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -440,7 +523,12 @@ fun EditorOverlay(
                                     updateElement(i, e.copy(size = v))
                                 },
                                 onValueChangeFinished = { sliderUndoPushed = false },
-                                valueRange = 0.01f..0.5f,
+                                // Camera là vòng tròn bé: bán kính 2%..12% chiều rộng.
+                                valueRange = if (e.type == ElementType.CAMERA) {
+                                    Config.CAM_RADIUS_MIN..Config.CAM_RADIUS_MAX
+                                } else {
+                                    0.01f..0.5f
+                                },
                                 modifier = Modifier.weight(1f),
                             )
                             Text(
@@ -466,11 +554,12 @@ fun EditorOverlay(
             }
         }
 
-        // Hộp "Thêm thành phần" (kiểu GG Mouse Pro): Chạm / Joystick / Vuốt
-        // / Camera. Render INLINE trong cùng cửa sổ overlay (lớp nền mờ +
-        // Card ở giữa) — TUYỆT ĐỐI KHÔNG dùng AlertDialog: nó tạo window
-        // riêng không có token Activity hợp lệ trong Service nên crash
-        // BadTokenException, văng ra màn hình chính (máy thật 22/11/2026).
+        // Hộp "Thêm thành phần" (kiểu GG Mouse Pro): Chạm / Xoay tự do / Tự
+        // động Tap / Joystick / Thả Tap / Macro / FPS Look / Vuốt. Render
+        // INLINE trong cùng cửa sổ overlay (lớp nền mờ + Card ở giữa) —
+        // TUYỆT ĐỐI KHÔNG dùng AlertDialog: nó tạo window riêng không có
+        // token Activity hợp lệ trong Service nên crash BadTokenException,
+        // văng ra màn hình chính (máy thật 22/11/2026).
         // Đặt cuối cùng trong Box để luôn nằm trên thanh trên/bảng chỉnh.
         if (showAddMenu) {
             val hasJoystick = currentElements.any { it.type == ElementType.JOYSTICK }
@@ -517,6 +606,31 @@ fun EditorOverlay(
                             showAddMenu = false
                             addElement(
                                 ProfileElement(
+                                    ElementType.FREE_LOOK, 0.5f, 0.5f,
+                                    Config.DEFAULT_BUTTON_SIZE, null, "Xoay tự do",
+                                ),
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("🔄 Xoay tự do — bấm phím để đổi nhìn tự do/con trỏ", fontSize = 15.sp) }
+                    TextButton(
+                        onClick = {
+                            showAddMenu = false
+                            addElement(
+                                ProfileElement(
+                                    ElementType.AUTO_TAP, 0.5f, 0.5f,
+                                    Config.DEFAULT_BUTTON_SIZE, null, "Tự động Tap",
+                                    intervalMs = Config.AUTO_TAP_INTERVAL_DEFAULT_MS,
+                                ),
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("🔁 Tự động Tap — giữ phím để tap lặp", fontSize = 15.sp) }
+                    TextButton(
+                        onClick = {
+                            showAddMenu = false
+                            addElement(
+                                ProfileElement(
                                     ElementType.JOYSTICK, Config.JOY_CENTER_X,
                                     Config.JOY_CENTER_Y, Config.JOY_RADIUS, null, "Joystick",
                                 ),
@@ -535,8 +649,35 @@ fun EditorOverlay(
                             showAddMenu = false
                             addElement(
                                 ProfileElement(
+                                    ElementType.RELEASE_TAP, 0.5f, 0.5f,
+                                    Config.DEFAULT_BUTTON_SIZE, null, "Thả Tap",
+                                ),
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("👆⬆ Thả Tap — tap 1 cái khi nhả phím", fontSize = 15.sp) }
+                    TextButton(
+                        onClick = {
+                            showAddMenu = false
+                            addElement(
+                                ProfileElement(
+                                    ElementType.MACRO, 0.5f, 0.5f,
+                                    Config.DEFAULT_BUTTON_SIZE, null, "Macro",
+                                    steps = listOf(
+                                        MacroStep(MacroStepKind.TAP, 0.5f, 0.5f),
+                                    ),
+                                ),
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("🎬 Macro — 1 phím chạy chuỗi thao tác", fontSize = 15.sp) }
+                    TextButton(
+                        onClick = {
+                            showAddMenu = false
+                            addElement(
+                                ProfileElement(
                                     ElementType.CAMERA, Config.CAM_CENTER_X,
-                                    Config.CAM_CENTER_Y, Config.CAM_HALF_W, null, "Camera",
+                                    Config.CAM_CENTER_Y, Config.CAM_HALF_W, null, "FPS Look",
                                 ),
                             )
                         },
@@ -544,7 +685,7 @@ fun EditorOverlay(
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(
-                            if (hasCamera) "🎥 Camera — đã có rồi" else "🎥 Camera — nhìn bằng chuột (kéo vô hạn)",
+                            if (hasCamera) "🎥 FPS Look — đã có rồi" else "🎥 FPS Look — nhìn bằng chuột (vòng tròn nhỏ)",
                             fontSize = 15.sp,
                         )
                     }
@@ -573,8 +714,87 @@ fun EditorOverlay(
     }
 }
 
-/** Vẽ 1 phần tử: joystick = vòng tròn xanh lá, camera = khung vuông xanh dương,
- *  nút/vuốt = vòng tròn nền đen viền xanh dương/tím có nhãn tên phím (kiểu GG). */
+/** Trình sửa chuỗi bước Macro (build-9): danh sách bước + thêm/xóa bước.
+ *  Tap lấy vị trí hiện tại của phần tử; Chờ thêm 200ms (bấm −/+ để đổi);
+ *  Vuốt từ vị trí phần tử sang phải 15% chiều rộng. */
+@Composable
+private fun MacroStepEditor(
+    element: ProfileElement,
+    onUpdate: (ProfileElement) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            "Chuỗi Macro (${element.steps.size} bước) — bấm phím thì chạy lần lượt:",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        element.steps.forEachIndexed { i, step ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = when (step.kind) {
+                        MacroStepKind.TAP -> "${i + 1}. Tap (${(step.x * 100).roundToInt()}%, ${(step.y * 100).roundToInt()}%)"
+                        MacroStepKind.WAIT -> "${i + 1}. Chờ ${step.ms}ms"
+                        MacroStepKind.SWIPE -> "${i + 1}. Vuốt (${(step.x * 100).roundToInt()}%, ${(step.y * 100).roundToInt()}%) → (${(step.x2 * 100).roundToInt()}%, ${(step.y2 * 100).roundToInt()}%) ${step.ms}ms"
+                    },
+                    modifier = Modifier.weight(1f),
+                    fontSize = 13.sp,
+                )
+                if (step.kind == MacroStepKind.WAIT) {
+                    TextButton(onClick = {
+                        val steps = element.steps.mapIndexed { j, s ->
+                            if (j == i) s.copy(ms = (s.ms - 100).coerceAtLeast(0L)) else s
+                        }
+                        onUpdate(element.copy(steps = steps))
+                    }) { Text("−100") }
+                    TextButton(onClick = {
+                        val steps = element.steps.mapIndexed { j, s ->
+                            if (j == i) {
+                                s.copy(ms = (s.ms + 100).coerceAtMost(Config.MACRO_WAIT_MAX_MS))
+                            } else s
+                        }
+                        onUpdate(element.copy(steps = steps))
+                    }) { Text("+100") }
+                }
+                TextButton(onClick = {
+                    val steps = element.steps.filterIndexed { j, _ -> j != i }
+                    onUpdate(element.copy(steps = steps))
+                }) { Text("✕", color = MaterialTheme.colorScheme.error) }
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = {
+                onUpdate(
+                    element.copy(
+                        steps = element.steps + MacroStep(
+                            MacroStepKind.TAP, element.x, element.y,
+                        ),
+                    ),
+                )
+            }) { Text("+ Tap tại đây", fontSize = 13.sp) }
+            OutlinedButton(onClick = {
+                onUpdate(
+                    element.copy(
+                        steps = element.steps + MacroStep(MacroStepKind.WAIT, ms = 200L),
+                    ),
+                )
+            }) { Text("+ Chờ 200ms", fontSize = 13.sp) }
+            OutlinedButton(onClick = {
+                onUpdate(
+                    element.copy(
+                        steps = element.steps + MacroStep(
+                            MacroStepKind.SWIPE, element.x, element.y,
+                            (element.x + 0.15f).coerceIn(0f, 1f), element.y, 400L,
+                        ),
+                    ),
+                )
+            }) { Text("+ Vuốt", fontSize = 13.sp) }
+        }
+    }
+}
+
+/** Vẽ 1 phần tử: joystick = vòng tròn xanh lá, camera = vòng tròn xanh dương
+ *  (build-9: FPS Look là vòng tròn nhỏ), nút/vuốt/tự động tap/thả tap/xoay
+ *  tự do/macro = vòng tròn nền đen viền màu có nhãn tên phím (kiểu GG). */
 @Composable
 private fun ElementView(
     element: ProfileElement,
@@ -594,16 +814,27 @@ private fun ElementView(
         ElementType.CAMERA -> Color(0xFF42A5F5)
         ElementType.BUTTON -> Color(0xFF42A5F5)
         ElementType.SWIPE -> Color(0xFFAB47BC)
+        ElementType.AUTO_TAP -> Color(0xFFFF9800)
+        ElementType.RELEASE_TAP -> Color(0xFF26A69A)
+        ElementType.FREE_LOOK -> Color(0xFFFFEB3B)
+        ElementType.MACRO -> Color(0xFFEF5350)
     }
     val fillColor = when (element.type) {
         ElementType.JOYSTICK -> Color(0xFF4CAF50).copy(alpha = 0.25f)
         ElementType.CAMERA -> Color(0xFF2196F3).copy(alpha = 0.15f)
         ElementType.BUTTON -> Color.Black.copy(alpha = 0.45f)
         ElementType.SWIPE -> Color(0xFF7B1FA2).copy(alpha = 0.35f)
+        ElementType.AUTO_TAP -> Color(0xFFEF6C00).copy(alpha = 0.35f)
+        ElementType.RELEASE_TAP -> Color(0xFF00796B).copy(alpha = 0.35f)
+        ElementType.FREE_LOOK -> Color(0xFFF9A825).copy(alpha = 0.35f)
+        ElementType.MACRO -> Color(0xFFC62828).copy(alpha = 0.35f)
     }
-    val shape = if (element.type == ElementType.CAMERA) RoundedCornerShape(8.dp) else CircleShape
+    // Mọi loại đều là vòng tròn (camera trước là khung chữ nhật, build-9 đổi
+    // thành vòng tròn nhỏ như FPS Look).
+    val shape = CircleShape
     val label = when (element.type) {
-        ElementType.BUTTON, ElementType.SWIPE ->
+        ElementType.BUTTON, ElementType.SWIPE, ElementType.AUTO_TAP,
+        ElementType.RELEASE_TAP, ElementType.FREE_LOOK, ElementType.MACRO ->
             element.keyCode?.let { LinuxKey.name(it) } ?: element.name
         else -> element.name
     }

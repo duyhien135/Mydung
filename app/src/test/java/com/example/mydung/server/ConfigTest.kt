@@ -35,4 +35,15 @@ class ConfigTest {
         // Fingerprint có dấu ':' xen giữa -> không khớp mẫu 32 hex liền nhau.
         assertEquals("Fingerprint=AA:BB:CC", Config.redactSecrets("Fingerprint=AA:BB:CC"))
     }
+
+    @Test
+    fun pollIntervalMs_rates() {
+        assertEquals(8L, Config.pollIntervalMs(125))
+        assertEquals(4L, Config.pollIntervalMs(250))
+        assertEquals(2L, Config.pollIntervalMs(500))
+        assertEquals(1L, Config.pollIntervalMs(1000))
+        // Ngoài dải thì kẹp về 125..1000.
+        assertEquals(8L, Config.pollIntervalMs(60))
+        assertEquals(1L, Config.pollIntervalMs(2000))
+    }
 }

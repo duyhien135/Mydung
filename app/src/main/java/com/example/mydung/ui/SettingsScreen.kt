@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.sp
 import com.example.mydung.ActivationMethod
 import com.example.mydung.ActivationPrefs
 import com.example.mydung.AdbConnectionManager
+import com.example.mydung.OverlayService
 import com.example.mydung.PairingState
 import com.example.mydung.server.AdbShellExecutor
 import com.example.mydung.server.InputClient
@@ -275,6 +276,28 @@ fun SettingsScreen(
                 modifier = Modifier.weight(1.3f),
             ) { Text("📄 Xem log Server", fontSize = 13.sp) }
         }
+
+        // Lớp phủ (build-9): hiện lại khi đã ẩn mà quên phím tắt (mặc định
+        // F10). Keymap vẫn chạy ngầm khi lớp phủ bị ẩn.
+        Text(
+            "Lớp phủ",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Button(onClick = { OverlayService.showOverlay(context) }) {
+                Text("👁 Hiện lại lớp phủ")
+            }
+        }
+        Text(
+            "Dùng khi đã ẩn lớp phủ mà quên phím tắt (mặc định F10). " +
+                "Keymap vẫn chạy ngầm khi lớp phủ bị ẩn.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
 
         // Kiểm tra phím/cảm ứng (trước nằm ở màn chính, dời sang đây).
         Text(

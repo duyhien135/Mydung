@@ -6,6 +6,8 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.hardware.input.InputManager
 import android.net.Uri
 import android.os.Build
@@ -17,8 +19,10 @@ import android.view.InputDevice
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -60,11 +64,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationManagerCompat
@@ -77,6 +83,7 @@ import com.example.mydung.ConnectionState
 import com.example.mydung.OverlayService
 import com.example.mydung.PairingState
 import com.example.mydung.server.AdbShellExecutor
+import com.example.mydung.server.DeviceGrouping
 import com.example.mydung.server.InputClient
 import com.example.mydung.server.Profile
 import com.example.mydung.server.ProfileCodec
@@ -99,9 +106,10 @@ import java.util.UUID
  * - Server TỰ khởi động khi mở app (không còn nút khởi động tay): màn chính
  *   đợi kiểm tra xong Server cũ + phương thức sẵn sàng rồi gọi startServer()
  *   ngầm 1 lần. Chỉ hiện "Đang chuẩn bị…" rồi "Sẵn sàng".
- * - Màn chính chỉ còn: 1 dòng trạng thái + danh sách game (KHỞI CHẠY).
- *   Viên quyền / hàng thiết bị / checklist chỉ hiện khi CÓ gì chưa xong
- *   (quyền thiếu, đã cắm chuột/phím, bước kích hoạt chưa xong).
+ * - Màn chính chỉ còn: 1 dòng trạng thái + danh sách game (logo + tên +
+ *   nút "Vô"; nhấn giữ thẻ để xóa). Viên quyền / hàng thiết bị /
+ *   checklist chỉ hiện khi CÓ gì chưa xong (quyền thiếu, đã cắm chuột/phím,
+ *   bước kích hoạt chưa xong).
  * - Không hiện PID/UID/cổng lên UI nữa (chỉ ghi log). Lỗi Server thì hiện
  *   1 dòng ngắn + nút "Thử lại", log chi tiết vẫn ở dưới để sao chép.
  * - Chỉnh nút nằm trong bảng nút nổi K; Thử phím/Thử cảm ứng chuyển sang
@@ -423,15 +431,22 @@ fun HomeScreen(
             }
         }
 
-        // Thiết bị cắm ngoài: chỉ hiện 1 dòng gọn khi ĐÃ cắm chuột/phím.
+        // Thiết bị cắm ngoài: gộp theo thiết bị vật lý (1 dongle liệt kê
+        // nhiều node Receiver/Keyboard/Mouse/System Control thì gộp thành
+        // 1 cái tên), chỉ hiện 1 dòng gọn khi ĐÃ cắm chuột/phím.
         if (devices.isNotEmpty()) {
+            val grouped = remember(devices) {
+                DeviceGrouping.format(
+                    DeviceGrouping.group(
+                        devices.map { DeviceGrouping.Node(it.name, it.isMouse, it.isKeyboard) },
+                    ),
+                )
+            }
             Text(
-                text = devices.joinToString("   ") { d ->
-                    (if (d.isMouse) "🖱 " else "⌨️ ") + d.name
-                },
+                text = grouped,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
+                maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
         }
@@ -558,40 +573,42 @@ fun HomeScreen(
         }
         profiles.forEach { p ->
             val installed = p.packageName != null && installedPkgs.contains(p.packageName)
-            Card(modifier = Modifier.fillMaxWidth()) {
+            // Thẻ game tối giản (build-9): chỉ LOGO game (icon lấy từ
+            // PackageManager) + tên game + nút "Vô". Bấm thẻ = vào game;
+            // NHẤN GIỮ thẻ = xóa game (hộp xác nhận). Không còn tên
+            // package / số phần tử / nút XÓA trên thẻ.
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .combinedClickable(
+                        onClick = { if (installed && serverRunning) launchGame(p) },
+                        onLongClick = { deleteTarget = p },
+                    ),
+            ) {
                 Row(
                     modifier = Modifier.padding(14.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    GameIcon(packageName = p.packageName, size = 48.dp)
+                    Spacer(modifier = Modifier.width(12.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = p.name + if (p.id == activeId) "  ● đang dùng" else "",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                         )
-                        Text(
-                            text = when {
-                                p.packageName == null -> "Chưa gán game"
-                                !installed -> "${p.packageName} (chưa cài)"
-                                else -> p.packageName
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Text(
-                            text = "${p.elements.size} phần tử",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        if (!installed) {
+                            Text(
+                                text = if (p.packageName == null) "Chưa gán game" else "(chưa cài)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
-                    TextButton(onClick = { deleteTarget = p }) {
-                        Text("XÓA", color = MaterialTheme.colorScheme.error)
-                    }
-                    Spacer(modifier = Modifier.width(4.dp))
                     Button(
                         onClick = { launchGame(p) },
                         enabled = installed && serverRunning,
-                    ) { Text("KHỞI CHẠY") }
+                    ) { Text("Vô") }
                 }
             }
         }
@@ -706,6 +723,43 @@ private fun PermissionChip(label: String, granted: Boolean, onClick: () -> Unit)
 }
 
 private data class UsbDevice(val name: String, val isMouse: Boolean, val isKeyboard: Boolean)
+
+/** Icon game lấy từ PackageManager (build-9: logo trên thẻ game tối giản).
+ *  Vẽ Drawable thủ công sang Bitmap (không dùng core-ktx) rồi đổi sang
+ *  ImageBitmap; không lấy được icon (game chưa gán/chưa cài) thì hiện 🎮. */
+@Composable
+private fun GameIcon(packageName: String?, size: Dp) {
+    val context = LocalContext.current
+    val bitmap = remember(packageName) {
+        packageName?.let {
+            runCatching {
+                val drawable = context.packageManager.getApplicationIcon(it)
+                val w = drawable.intrinsicWidth.coerceAtLeast(1)
+                val h = drawable.intrinsicHeight.coerceAtLeast(1)
+                val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                val canvas = Canvas(bmp)
+                drawable.setBounds(0, 0, w, h)
+                drawable.draw(canvas)
+                bmp.asImageBitmap()
+            }.getOrNull()
+        }
+    }
+    if (bitmap != null) {
+        Image(bitmap = bitmap, contentDescription = null, modifier = Modifier.size(size))
+    } else {
+        Box(
+            modifier = Modifier
+                .size(size)
+                .background(
+                    MaterialTheme.colorScheme.surfaceVariant,
+                    RoundedCornerShape(12.dp),
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("🎮", fontSize = 24.sp)
+        }
+    }
+}
 
 /** Liệt kê chuột/bàn phím cắm ngoài (USB OTG / Bluetooth). Bỏ thiết bị ảo và thiết bị trong máy. */
 private fun listExternalInputDevices(): List<UsbDevice> {

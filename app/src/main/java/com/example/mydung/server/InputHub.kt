@@ -128,7 +128,11 @@ object InputHub {
                 ungrabDevice(info)
             }
         }
-        val method = if (Grabber.method == Grabber.Method.A_REFLECTION) "A" else "B"
+        val method = when (Grabber.method) {
+            Grabber.Method.A_REFLECTION -> "A"
+            Grabber.Method.C_OS -> "C"
+            Grabber.Method.B_NONE -> "B"
+        }
         Server.log("GRAB $target=$on: chiếm được $grabbed, lỗi $failed (cách $method).")
         return "OK GRAB mouse=${if (grabMouse) 1 else 0} keyboard=${if (grabKeyboard) 1 else 0} " +
             "method=$method grabbed=$grabbed failed=$failed"

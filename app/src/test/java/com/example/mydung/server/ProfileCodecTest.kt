@@ -229,4 +229,104 @@ class ProfileCodecTest {
         assertEquals(250L, spec.durationMs)
         assertTrue(l.buttons.isEmpty())
     }
+
+    // ── Build-9: loại mới + đầm tâm + phím ẩn lớp phủ ──
+
+    @Test
+    fun roundTrip_newElementTypes() {
+        val p = Profile(
+            id = "x", name = "Mới", packageName = null, schemaVersion = 1,
+            sensX = 1f, sensY = 1f, mapToggleKey = LinuxKey.F8,
+            elements = listOf(
+                ProfileElement(
+                    ElementType.AUTO_TAP, 0.5f, 0.5f, 0.03f, LinuxKey.Q, "Auto",
+                    intervalMs = 250L,
+                ),
+                ProfileElement(
+                    ElementType.RELEASE_TAP, 0.6f, 0.6f, 0.03f, LinuxKey.E, "Thả",
+                ),
+                ProfileElement(
+                    ElementType.FREE_LOOK, 0.7f, 0.7f, 0.03f, LinuxKey.V, "Xoay",
+                ),
+                ProfileElement(
+                    ElementType.MACRO, 0.4f, 0.4f, 0.03f, LinuxKey.R, "Macro",
+                    steps = listOf(
+                        MacroStep(MacroStepKind.TAP, 0.5f, 0.5f),
+                        MacroStep(MacroStepKind.WAIT, ms = 200L),
+                        MacroStep(MacroStepKind.SWIPE, 0.2f, 0.2f, 0.8f, 0.8f, 300L),
+                    ),
+                ),
+            ),
+            dampX = 3, dampY = 5, overlayToggleKey = LinuxKey.F11,
+        )
+        val back = ok(ProfileCodec.toJson(p))
+        assertEquals(p, back)
+    }
+
+    @Test
+    fun oldJson_withoutBuild9Fields_usesDefaults() {
+        val p = ok("""{"elements":[]}""")
+        assertEquals(1, p.dampX)
+        assertEquals(1, p.dampY)
+        assertEquals(LinuxKey.F10, p.overlayToggleKey)
+        assertTrue(p.elements.isEmpty())
+    }
+
+    @Test
+    fun unknownElementType_skipped() {
+        val p = ok(
+            """{"elements":[
+                {"type":"BUTTON","x":0.5,"y":0.5,"size":0.03,"key":57,"name":"N"},
+                {"type":"LASER","x":0.5,"y":0.5,"size":0.03,"name":"Lạ"}
+            ]}""",
+        )
+        assertEquals(1, p.elements.size)
+        assertEquals(ElementType.BUTTON, p.elements[0].type)
+    }
+
+    @Test
+    fun toLayout_newTypesGoToTheirMaps() {
+        val p = Profile(
+            id = "x", name = "Mới", packageName = null, schemaVersion = 1,
+            sensX = 1f, sensY = 1f, mapToggleKey = LinuxKey.F8,
+            elements = listOf(
+                ProfileElement(ElementType.AUTO_TAP, 0.5f, 0.5f, 0.03f, LinuxKey.Q, "A", intervalMs = 150L),
+                ProfileElement(ElementType.RELEASE_TAP, 0.6f, 0.6f, 0.03f, LinuxKey.E, "T"),
+                ProfileElement(ElementType.FREE_LOOK, 0.7f, 0.7f, 0.03f, LinuxKey.V, "X"),
+                ProfileElement(
+                    ElementType.MACRO, 0.4f, 0.4f, 0.03f, LinuxKey.R, "M",
+                    steps = listOf(MacroStep(MacroStepKind.TAP, 0.5f, 0.5f)),
+                ),
+                ProfileElement(
+                    ElementType.MACRO, 0.4f, 0.4f, 0.03f, LinuxKey.T, "Rỗng",
+                    steps = emptyList(), // macro không có bước thì không vào bảng
+                ),
+            ),
+            dampX = 2, dampY = 4,
+        )
+        val l = p.toLayout(1000, 500)
+        assertEquals(1, l.autoTaps.size)
+        assertEquals(150L, l.autoTaps[LinuxKey.Q]?.intervalMs)
+        assertEquals(1, l.releaseTaps.size)
+        assertEquals(0.6f, l.releaseTaps[LinuxKey.E]!!.first, 0.001f)
+        assertEquals(setOf(LinuxKey.V), l.freeLookKeys)
+        assertEquals(1, l.macros.size)
+        assertTrue(l.macros.containsKey(LinuxKey.R))
+        assertEquals(2, l.dampX)
+        assertEquals(4, l.dampY)
+    }
+
+    @Test
+    fun toLayout_cameraSizeClampedToCircleRadius() {
+        // Profile cũ có camera size 0.26 (chữ nhật) -> toLayout kẹp về 0.12 tối đa.
+        val p = Profile(
+            id = "x", name = "Cũ", packageName = null, schemaVersion = 1,
+            sensX = 1f, sensY = 1f, mapToggleKey = LinuxKey.F8,
+            elements = listOf(
+                ProfileElement(ElementType.CAMERA, 0.58f, 0.5f, 0.26f, null, "Camera"),
+            ),
+        )
+        val l = p.toLayout(2560, 1600)
+        assertEquals(0.12f, l.camHW, 0.001f)
+    }
 }

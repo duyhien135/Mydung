@@ -2,8 +2,31 @@ package com.example.mydung.server
 
 import java.util.UUID
 
-/** Loại phần tử trên lớp phủ chỉnh nút. */
-enum class ElementType { JOYSTICK, CAMERA, BUTTON, SWIPE }
+/** Loại phần tử trên lớp phủ chỉnh nút. Thêm loại mới KHÔNG được đổi tên loại cũ (JSON đã lưu). */
+enum class ElementType {
+    JOYSTICK, CAMERA, BUTTON, SWIPE,
+    // Build-9 (như K7XD): AUTO_TAP = giữ phím thì tap lặp; RELEASE_TAP = tap
+    // khi nhả phím; FREE_LOOK = bấm phím đổi chế độ nhìn tự do/con trỏ;
+    // MACRO = 1 phím chạy chuỗi bước tap/chờ/vuốt.
+    AUTO_TAP, RELEASE_TAP, FREE_LOOK, MACRO,
+}
+
+/** Loại bước trong Macro: TAP = tap 1 cái, WAIT = chờ ms, SWIPE = vuốt. */
+enum class MacroStepKind { TAP, WAIT, SWIPE }
+
+/**
+ * Một bước Macro. x/y = điểm bắt đầu (tap/vuốt), x2/y2 = điểm kết thúc
+ * (vuốt), ms = thời gian chờ (WAIT) hoặc thời lượng vuốt (SWIPE).
+ * Tọa độ theo tỉ lệ 0..1.
+ */
+data class MacroStep(
+    val kind: MacroStepKind = MacroStepKind.TAP,
+    val x: Float = 0.5f,
+    val y: Float = 0.5f,
+    val x2: Float = 0.5f,
+    val y2: Float = 0.5f,
+    val ms: Long = 0L,
+)
 
 /**
  * 1 phần tử trong profile. Tọa độ theo TỈ LỆ màn hình ngang (0.0..1.0).
@@ -12,6 +35,7 @@ enum class ElementType { JOYSTICK, CAMERA, BUTTON, SWIPE }
  * vuốt = bán kính 2 đầu mút.
  * SWIPE thêm điểm cuối (x2, y2) và thời gian vuốt (durationMs): bấm phím thì
  * ngón chạm ở (x, y), trượt tới (x2, y2) trong durationMs rồi nhả.
+ * AUTO_TAP thêm intervalMs (khoảng tap lặp); MACRO thêm steps (chuỗi bước).
  */
 data class ProfileElement(
     val type: ElementType,
@@ -24,6 +48,9 @@ data class ProfileElement(
     val x2: Float? = null, // SWIPE: điểm cuối (tỉ lệ); null = chưa đặt (dùng mặc định)
     val y2: Float? = null, // SWIPE: điểm cuối (tỉ lệ)
     val durationMs: Long = 400, // SWIPE: thời gian vuốt (ms), kẹp 50..3000 lúc parse
+    // Build-9: AUTO_TAP — khoảng tap lặp (ms); MACRO — chuỗi bước.
+    val intervalMs: Long = Config.AUTO_TAP_INTERVAL_DEFAULT_MS,
+    val steps: List<MacroStep> = emptyList(),
 )
 
 /** Profile: 1 bộ bố cục + cài đặt cho 1 game. */
@@ -39,6 +66,11 @@ data class Profile(
     // Phím chuyển chế độ con trỏ <-> nhìn tự do (mặc định F9). Có giá trị
     // mặc định để code cũ tạo Profile không cần sửa.
     val cursorToggleKey: Int = Config.CURSOR_TOGGLE_KEY,
+    // Build-9: Đầm tâm X/Y (mức 1..10, 1 = không làm mượt) + phím ẩn/hiện
+    // lớp phủ (mặc định F10). Mặc định để profile cũ vẫn tạo được.
+    val dampX: Int = Config.DAMP_DEFAULT,
+    val dampY: Int = Config.DAMP_DEFAULT,
+    val overlayToggleKey: Int = Config.OVERLAY_TOGGLE_KEY,
 ) {
     /** Chuyển profile thành bố cục cho TouchMapper. Thiếu joystick/camera thì dùng mặc định GĐ4. */
     fun toLayout(displayW: Int, displayH: Int): TouchLayout {
@@ -46,6 +78,10 @@ data class Profile(
         val cam = elements.firstOrNull { it.enabled && it.type == ElementType.CAMERA }
         val buttons = HashMap<Int, Pair<Float, Float>>()
         val swipes = HashMap<Int, SwipeSpec>()
+        val autoTaps = HashMap<Int, AutoTapSpec>()
+        val releaseTaps = HashMap<Int, Pair<Float, Float>>()
+        val freeLookKeys = HashSet<Int>()
+        val macros = HashMap<Int, List<MacroStep>>()
         for (e in elements) {
             if (!e.enabled || e.keyCode == null) continue
             when (e.type) {
@@ -56,7 +92,19 @@ data class Profile(
                     e.y2 ?: e.y,
                     e.durationMs.coerceIn(50L, 3000L),
                 )
-                else -> { /* joystick/camera không vào 2 bảng này */ }
+                ElementType.AUTO_TAP -> autoTaps[e.keyCode] = AutoTapSpec(
+                    e.x, e.y,
+                    e.intervalMs.coerceIn(
+                        Config.AUTO_TAP_INTERVAL_MIN_MS,
+                        Config.AUTO_TAP_INTERVAL_MAX_MS,
+                    ),
+                )
+                ElementType.RELEASE_TAP -> releaseTaps[e.keyCode] = e.x to e.y
+                ElementType.FREE_LOOK -> freeLookKeys.add(e.keyCode)
+                ElementType.MACRO -> {
+                    if (e.steps.isNotEmpty()) macros[e.keyCode] = e.steps
+                }
+                else -> { /* joystick/camera không vào các bảng này */ }
             }
         }
         return TouchLayout(
@@ -65,7 +113,10 @@ data class Profile(
             joyR = joy?.size ?: Config.JOY_RADIUS,
             camX = cam?.x ?: Config.CAM_CENTER_X,
             camY = cam?.y ?: Config.CAM_CENTER_Y,
-            camHW = cam?.size ?: Config.CAM_HALF_W,
+            // Camera là VÙNG TRÒN (build-9): size = bán kính, kẹp 0.02..0.12
+            // (profile cũ size 0.26 tự thu về 0.12 — vòng tròn bé như yêu cầu).
+            camHW = (cam?.size ?: Config.CAM_HALF_W)
+                .coerceIn(Config.CAM_RADIUS_MIN, Config.CAM_RADIUS_MAX),
             // Vùng camera vuông theo pixel: nửa cao = nửa rộng * tỉ lệ màn hình.
             camHH = cam?.let { it.size * displayW / displayH } ?: Config.CAM_HALF_H,
             sensX = sensX,
@@ -74,6 +125,13 @@ data class Profile(
             swipes = swipes,
             mapToggleKey = mapToggleKey,
             cursorToggleKey = cursorToggleKey,
+            autoTaps = autoTaps,
+            releaseTaps = releaseTaps,
+            freeLookKeys = freeLookKeys,
+            macros = macros,
+            dampX = dampX.coerceIn(Config.DAMP_MIN, Config.DAMP_MAX),
+            dampY = dampY.coerceIn(Config.DAMP_MIN, Config.DAMP_MAX),
+            overlayToggleKey = overlayToggleKey,
         )
     }
 }
@@ -115,7 +173,7 @@ object ProfileCodec {
         elements.add(
             ProfileElement(
                 ElementType.CAMERA, Config.CAM_CENTER_X, Config.CAM_CENTER_Y,
-                Config.CAM_HALF_W, null, "Camera",
+                Config.CAM_HALF_W, null, "FPS Look",
             ),
         )
         for ((code, point) in Config.DEFAULT_BUTTONS) {
@@ -158,6 +216,23 @@ object ProfileCodec {
                 if (e.y2 != null) fields["y2"] = JsonValue.Num(e.y2.toDouble())
                 fields["durationMs"] = JsonValue.Num(e.durationMs.toDouble())
             }
+            // Build-9: chỉ ghi trường riêng của từng loại mới (JSON cũ thiếu
+            // thì parse dùng mặc định — tương thích ngược, không cần tăng version).
+            if (e.type == ElementType.AUTO_TAP) {
+                fields["intervalMs"] = JsonValue.Num(e.intervalMs.toDouble())
+            }
+            if (e.type == ElementType.MACRO) {
+                fields["steps"] = JsonValue.Arr(e.steps.map { s ->
+                    val sf = LinkedHashMap<String, JsonValue>()
+                    sf["k"] = JsonValue.Str(s.kind.name)
+                    sf["x"] = JsonValue.Num(s.x.toDouble())
+                    sf["y"] = JsonValue.Num(s.y.toDouble())
+                    sf["x2"] = JsonValue.Num(s.x2.toDouble())
+                    sf["y2"] = JsonValue.Num(s.y2.toDouble())
+                    sf["ms"] = JsonValue.Num(s.ms.toDouble())
+                    JsonValue.Obj(sf)
+                })
+            }
             JsonValue.Obj(fields)
         }
         val root = LinkedHashMap<String, JsonValue>()
@@ -169,6 +244,10 @@ object ProfileCodec {
         root["sensY"] = JsonValue.Num(p.sensY.toDouble())
         root["toggleKey"] = JsonValue.Num(p.mapToggleKey.toDouble())
         root["cursorKey"] = JsonValue.Num(p.cursorToggleKey.toDouble())
+        // Build-9: đầm tâm + phím ẩn/hiện lớp phủ (JSON cũ thiếu -> mặc định).
+        root["dampX"] = JsonValue.Num(p.dampX.toDouble())
+        root["dampY"] = JsonValue.Num(p.dampY.toDouble())
+        root["overlayKey"] = JsonValue.Num(p.overlayToggleKey.toDouble())
         root["elements"] = JsonValue.Arr(elements)
         return JsonValue.Obj(root)
     }
@@ -197,6 +276,12 @@ object ProfileCodec {
         val toggleKey = root["toggleKey"]?.int() ?: Config.MAP_TOGGLE_KEY
         // JSON cũ (trước khi có chế độ con trỏ) thiếu cursorKey -> mặc định F9.
         val cursorKey = root["cursorKey"]?.int() ?: Config.CURSOR_TOGGLE_KEY
+        // Build-9: JSON cũ thiếu dampX/dampY/overlayKey -> mặc định (1/1/F10).
+        val dampX = root["dampX"]?.int()?.coerceIn(Config.DAMP_MIN, Config.DAMP_MAX)
+            ?: Config.DAMP_DEFAULT
+        val dampY = root["dampY"]?.int()?.coerceIn(Config.DAMP_MIN, Config.DAMP_MAX)
+            ?: Config.DAMP_DEFAULT
+        val overlayKey = root["overlayKey"]?.int() ?: Config.OVERLAY_TOGGLE_KEY
 
         val elements = ArrayList<ProfileElement>()
         val rawElements = root["elements"]?.arr() ?: emptyList()
@@ -216,9 +301,13 @@ object ProfileCodec {
             val elName = obj["name"]?.str()?.takeIf { it.isNotBlank() }
                 ?: when (type) {
                     ElementType.JOYSTICK -> "Joystick"
-                    ElementType.CAMERA -> "Camera"
+                    ElementType.CAMERA -> "FPS Look"
                     ElementType.BUTTON -> "Nút"
                     ElementType.SWIPE -> "Vuốt"
+                    ElementType.AUTO_TAP -> "Tự động Tap"
+                    ElementType.RELEASE_TAP -> "Thả Tap"
+                    ElementType.FREE_LOOK -> "Xoay tự do"
+                    ElementType.MACRO -> "Macro"
                 }
             val enabled = obj["enabled"]?.bool() ?: true
             // Điểm cuối + thời gian chỉ có ý nghĩa với SWIPE; JSON cũ thiếu
@@ -232,14 +321,51 @@ object ProfileCodec {
             val durationMs = if (type == ElementType.SWIPE) {
                 obj["durationMs"]?.int()?.toLong()?.coerceIn(50L, 3000L) ?: 400L
             } else 400L
+            // Build-9: khoảng tap lặp (AUTO_TAP) + chuỗi bước (MACRO).
+            // Bước hỏng thì bỏ bước đó, không bỏ cả phần tử.
+            val intervalMs = if (type == ElementType.AUTO_TAP) {
+                obj["intervalMs"]?.int()?.toLong()?.coerceIn(
+                    Config.AUTO_TAP_INTERVAL_MIN_MS,
+                    Config.AUTO_TAP_INTERVAL_MAX_MS,
+                ) ?: Config.AUTO_TAP_INTERVAL_DEFAULT_MS
+            } else Config.AUTO_TAP_INTERVAL_DEFAULT_MS
+            val steps = if (type == ElementType.MACRO) {
+                (obj["steps"]?.arr() ?: emptyList()).mapNotNull { rawStep ->
+                    val s = rawStep.obj() ?: return@mapNotNull null
+                    val kind = try {
+                        MacroStepKind.valueOf(s["k"]?.str() ?: "")
+                    } catch (_: IllegalArgumentException) {
+                        return@mapNotNull null
+                    }
+                    val sx = s["x"]?.num()?.toFloat()?.takeIf { it.isFinite() }?.coerceIn(0f, 1f)
+                        ?: 0.5f
+                    val sy = s["y"]?.num()?.toFloat()?.takeIf { it.isFinite() }?.coerceIn(0f, 1f)
+                        ?: 0.5f
+                    val sx2 = s["x2"]?.num()?.toFloat()?.takeIf { it.isFinite() }?.coerceIn(0f, 1f)
+                        ?: sx
+                    val sy2 = s["y2"]?.num()?.toFloat()?.takeIf { it.isFinite() }?.coerceIn(0f, 1f)
+                        ?: sy
+                    val sms = when (kind) {
+                        MacroStepKind.WAIT -> s["ms"]?.int()?.toLong()
+                            ?.coerceIn(0L, Config.MACRO_WAIT_MAX_MS) ?: 0L
+                        MacroStepKind.SWIPE -> s["ms"]?.int()?.toLong()
+                            ?.coerceIn(50L, 3000L) ?: 400L
+                        MacroStepKind.TAP -> 0L
+                    }
+                    MacroStep(kind, sx, sy, sx2, sy2, sms)
+                }
+            } else emptyList()
             elements.add(
                 ProfileElement(
                     type, x.coerceIn(0f, 1f), y.coerceIn(0f, 1f), size, key, elName, enabled,
-                    x2, y2, durationMs,
+                    x2, y2, durationMs, intervalMs, steps,
                 ),
             )
         }
-        val profile = Profile(id, name, pkg, CURRENT_VERSION, sensX, sensY, toggleKey, elements, cursorKey)
+        val profile = Profile(
+            id, name, pkg, CURRENT_VERSION, sensX, sensY, toggleKey, elements, cursorKey,
+            dampX, dampY, overlayKey,
+        )
         return Result.Ok(profile)
     }
 }

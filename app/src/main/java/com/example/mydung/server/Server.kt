@@ -294,6 +294,16 @@ object Server {
                         if (on == null) reply("ERR bad_cursormode_args")
                         else reply(TouchHub.setCursorMode(on))
                     }
+                    trimmed.startsWith("POLLRATE ") -> {
+                        val hz = TouchProtocol.parsePollRate(trimmed)
+                        if (hz == null) reply("ERR bad_pollrate_args")
+                        else reply(TouchHub.setPollRate(hz))
+                    }
+                    trimmed.startsWith("OVERLAY ") -> {
+                        val hidden = TouchProtocol.parseOverlay(trimmed)
+                        if (hidden == null) reply("ERR bad_overlay_args")
+                        else reply(TouchHub.setOverlayHidden(hidden))
+                    }
                     trimmed == "MAPSTATUS" -> {
                         reply(TouchHub.mapStatus())
                     }

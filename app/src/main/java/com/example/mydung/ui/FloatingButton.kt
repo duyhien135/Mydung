@@ -1,12 +1,14 @@
 package com.example.mydung.ui
 
 import android.os.SystemClock
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -15,13 +17,16 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentSize
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -35,6 +40,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
@@ -42,6 +49,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.mydung.server.Config
+import com.example.mydung.server.LinuxKey
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.roundToInt
@@ -49,9 +58,9 @@ import kotlin.math.roundToInt
 private val BUTTON_SIZE = 56.dp
 private val MENU_WIDTH = 240.dp
 private val MENU_ITEM_HEIGHT = 48.dp
-// Chiều cao lớn nhất trong 2 bảng (menu chính 5 mục = 256dp, bảng cài đặt
-// ≈ 268dp) — dùng để tính hướng mở menu, tránh tràn màn hình.
-private val PANEL_HEIGHT = 272.dp
+// Bảng chính 6 mục = 304dp; bảng Cài đặt cuộn được, cao tối đa 75% màn hình.
+private val MENU_PANEL_HEIGHT = 304.dp
+private const val SETTINGS_MAX_HEIGHT_FRACTION = 0.75f
 private val MENU_GAP = 8.dp
 
 /**
@@ -59,16 +68,22 @@ private val MENU_GAP = 8.dp
  * xanh lá khi MAP đang bật, xám khi tắt.
  *
  * - Bấm 1 cái: mở bảng điều khiển (Bật/tắt keymap / Chỉnh nút / đổi chế độ
- *   con trỏ ↔ nhìn tự do / Cài đặt / Mở app). Bấm lại nút K hoặc bấm ra
- *   ngoài thì đóng bảng.
+ *   con trỏ ↔ nhìn tự do / Cài đặt / Ẩn lớp phủ / Mở app). Bấm lại nút K
+ *   hoặc bấm ra ngoài thì đóng bảng.
  * - Bấm giữ ~0,5s: mở thẳng trình sửa keymap.
  * - Kéo: di chuyển nút (vị trí lưu lại cho lần sau). Không kéo được khi
  *   bảng đang mở — đóng bảng trước rồi kéo.
  *
- * Bảng Cài đặt (mục "⚙️ Cài đặt" trong bảng chính): độ nhạy chuột, kích
- * thước con trỏ, độ trong suốt logo. Không có "hiển thị điểm tiếp xúc"
- * (Server không báo tọa độ ngón về app) và "tần số lấy mẫu" (sự kiện đến
- * theo tốc độ thiết bị evdev, không có núm chỉnh thật).
+ * Bảng Cài đặt (mục "⚙️ Cài đặt" trong bảng chính): độ nhạy X/Y riêng, đầm
+ * tâm X/Y (mức 1..10), tốc độ con trỏ, tần số quét chuột (125/250/500/1000
+ * Hz — tốc độ xử lý nội bộ của app, không phải polling rate phần cứng của
+ * chuột USB), phím ẩn/hiện lớp phủ, kích thước con trỏ, độ trong suốt
+ * logo. Bảng cuộn được vì nhiều mục. Không có "hiển thị điểm tiếp xúc"
+ * (Server không báo tọa độ ngón về app).
+ *
+ * Mục "🙈 Ẩn lớp phủ": ẩn toàn bộ mọi thứ trên màn hình kể cả nút K (keymap
+ * vẫn chạy ngầm); hiện lại bằng phím nóng (mặc định F10) hoặc nút "Hiện lại
+ * lớp phủ" trong tab Cài đặt của app.
  *
  * Mọi bảng render INLINE trong cùng ComposeView của lớp phủ (TUYỆT ĐỐI
  * KHÔNG dùng Dialog/AlertDialog/PopupWindow dạng window riêng: cửa sổ
@@ -92,13 +107,31 @@ fun FloatingButton(
     cursorMode: StateFlow<Boolean>,
     buttonPosPx: StateFlow<Pair<Int, Int>>,
     logoAlpha: StateFlow<Float>,
-    sensitivity: StateFlow<Float>,
+    sensX: StateFlow<Float>,
+    sensY: StateFlow<Float>,
+    dampX: StateFlow<Int>,
+    dampY: StateFlow<Int>,
+    cursorSpeed: StateFlow<Float>,
+    pollRateHz: StateFlow<Int>,
+    overlayToggleKey: StateFlow<Int>,
     cursorDotSizeDp: StateFlow<Int>,
+    captureRequest: StateFlow<Int?>,
+    capturedKey: StateFlow<Pair<Int, Int>?>,
     onToggleMap: () -> Unit,
     onToggleCursorMode: () -> Unit,
     onOpenEditor: () -> Unit,
     onOpenApp: () -> Unit,
-    onSensitivityChange: (Float) -> Unit,
+    onHideOverlay: () -> Unit,
+    onSensXChange: (Float) -> Unit,
+    onSensYChange: (Float) -> Unit,
+    onDampXChange: (Int) -> Unit,
+    onDampYChange: (Int) -> Unit,
+    onCursorSpeedChange: (Float) -> Unit,
+    onPollRateChange: (Int) -> Unit,
+    onOverlayKeyChange: (Int) -> Unit,
+    onRequestOverlayKeyCapture: () -> Unit,
+    onCancelCapture: () -> Unit,
+    onClearCaptured: () -> Unit,
     onCursorDotSizeChange: (Int) -> Unit,
     onLogoAlphaChange: (Float) -> Unit,
     onDrag: (Offset) -> Unit,
@@ -134,15 +167,18 @@ fun FloatingButton(
     ) {
         // Vị trí bảng (chỉ dùng khi mở): neo vào nút K, mở xuống dưới /
         // sang phải nếu còn đủ chỗ, không thì mở lên trên / sang trái để
-        // không tràn màn hình.
+        // không tràn màn hình. Bảng Cài đặt cao tối đa 75% màn hình (cuộn
+        // được), bảng chính cao 304dp.
         val btnXDp = with(density) { btnX.toDp() }
         val btnYDp = with(density) { btnY.toDp() }
-        val openDown = btnYDp + BUTTON_SIZE + MENU_GAP + PANEL_HEIGHT <= maxHeight
+        val panelHeight =
+            if (showSettings) maxHeight * SETTINGS_MAX_HEIGHT_FRACTION else MENU_PANEL_HEIGHT
+        val openDown = btnYDp + BUTTON_SIZE + MENU_GAP + panelHeight <= maxHeight
         val alignLeft = btnXDp + MENU_WIDTH <= maxWidth
         val menuXDp =
             (if (alignLeft) btnXDp else btnXDp + BUTTON_SIZE - MENU_WIDTH).coerceAtLeast(0.dp)
         val menuYDp =
-            (if (openDown) btnYDp + BUTTON_SIZE + MENU_GAP else btnYDp - MENU_GAP - PANEL_HEIGHT)
+            (if (openDown) btnYDp + BUTTON_SIZE + MENU_GAP else btnYDp - MENU_GAP - panelHeight)
                 .coerceAtLeast(0.dp)
 
         // Lớp nền bấm ra ngoài để đóng bảng (chỉ khi bảng mở).
@@ -249,7 +285,14 @@ fun FloatingButton(
                     .width(MENU_WIDTH)
                     .background(Color(0xFF222222), RoundedCornerShape(12.dp))
                     .border(1.dp, Color.White.copy(alpha = 0.3f), RoundedCornerShape(12.dp))
-                    .padding(vertical = 8.dp),
+                    .padding(vertical = 8.dp)
+                    .then(
+                        if (showSettings) {
+                            Modifier.heightIn(max = maxHeight * SETTINGS_MAX_HEIGHT_FRACTION)
+                        } else {
+                            Modifier
+                        },
+                    ),
             ) {
                 if (!showSettings) {
                     MenuItem(if (on) "⏸ Tắt keymap" else "▶ Bật keymap") {
@@ -260,14 +303,32 @@ fun FloatingButton(
                         closeMenu(); onToggleCursorMode()
                     }
                     MenuItem("⚙️ Cài đặt") { showSettings = true }
+                    MenuItem("🙈 Ẩn lớp phủ") { closeMenu(); onHideOverlay() }
                     MenuItem("📱 Mở app KeyTouch") { closeMenu(); onOpenApp() }
                 } else {
                     SettingsPanel(
-                        sensitivity = sensitivity,
+                        sensX = sensX,
+                        sensY = sensY,
+                        dampX = dampX,
+                        dampY = dampY,
+                        cursorSpeed = cursorSpeed,
+                        pollRateHz = pollRateHz,
+                        overlayToggleKey = overlayToggleKey,
                         cursorDotSizeDp = cursorDotSizeDp,
                         logoAlpha = logoAlpha,
+                        captureRequest = captureRequest,
+                        capturedKey = capturedKey,
                         onBack = { showSettings = false },
-                        onSensitivityChange = onSensitivityChange,
+                        onSensXChange = onSensXChange,
+                        onSensYChange = onSensYChange,
+                        onDampXChange = onDampXChange,
+                        onDampYChange = onDampYChange,
+                        onCursorSpeedChange = onCursorSpeedChange,
+                        onPollRateChange = onPollRateChange,
+                        onOverlayKeyChange = onOverlayKeyChange,
+                        onRequestOverlayKeyCapture = onRequestOverlayKeyCapture,
+                        onCancelCapture = onCancelCapture,
+                        onClearCaptured = onClearCaptured,
                         onCursorDotSizeChange = onCursorDotSizeChange,
                         onLogoAlphaChange = onLogoAlphaChange,
                     )
@@ -293,80 +354,251 @@ private fun MenuItem(label: String, onClick: () -> Unit) {
 }
 
 /**
- * Bảng Cài đặt (kiểu "Cài đặt cơ bản" của GG Mouse Pro): 3 thanh trượt.
- * Độ nhạy áp dụng khi nhả tay (mỗi lần áp dụng là 1 lệnh TOUCHCFG qua
- * mạng, kéo mà gửi liên tục thì spam); kích thước con trỏ + trong suốt
- * logo áp dụng ngay khi kéo (chỉ đổi StateFlow trong app).
+ * Bảng Cài đặt (kiểu "Cài đặt cơ bản" của GG Mouse Pro): độ nhạy X/Y riêng,
+ * đầm tâm X/Y, tốc độ con trỏ, tần số quét chuột, phím ẩn/hiện lớp phủ, kích
+ * thước con trỏ, độ trong suốt logo. Cuộn được vì nhiều mục.
+ * Độ nhạy / đầm tâm / tốc độ con trỏ áp dụng khi nhả tay (mỗi lần áp dụng
+ * là 1 lệnh TOUCHCFG qua mạng, kéo mà gửi liên tục thì spam); tần số quét
+ * chuột áp dụng ngay khi bấm chip; kích thước con trỏ + trong suốt logo
+ * áp dụng ngay khi kéo (chỉ đổi StateFlow trong app).
  */
 @Composable
 private fun SettingsPanel(
-    sensitivity: StateFlow<Float>,
+    sensX: StateFlow<Float>,
+    sensY: StateFlow<Float>,
+    dampX: StateFlow<Int>,
+    dampY: StateFlow<Int>,
+    cursorSpeed: StateFlow<Float>,
+    pollRateHz: StateFlow<Int>,
+    overlayToggleKey: StateFlow<Int>,
     cursorDotSizeDp: StateFlow<Int>,
     logoAlpha: StateFlow<Float>,
+    captureRequest: StateFlow<Int?>,
+    capturedKey: StateFlow<Pair<Int, Int>?>,
     onBack: () -> Unit,
-    onSensitivityChange: (Float) -> Unit,
+    onSensXChange: (Float) -> Unit,
+    onSensYChange: (Float) -> Unit,
+    onDampXChange: (Int) -> Unit,
+    onDampYChange: (Int) -> Unit,
+    onCursorSpeedChange: (Float) -> Unit,
+    onPollRateChange: (Int) -> Unit,
+    onOverlayKeyChange: (Int) -> Unit,
+    onRequestOverlayKeyCapture: () -> Unit,
+    onCancelCapture: () -> Unit,
+    onClearCaptured: () -> Unit,
     onCursorDotSizeChange: (Int) -> Unit,
     onLogoAlphaChange: (Float) -> Unit,
 ) {
-    val sensValue by sensitivity.collectAsState()
+    val sensXValue by sensX.collectAsState()
+    val sensYValue by sensY.collectAsState()
+    val dampXValue by dampX.collectAsState()
+    val dampYValue by dampY.collectAsState()
+    val speedValue by cursorSpeed.collectAsState()
+    val pollHzValue by pollRateHz.collectAsState()
+    val overlayKeyValue by overlayToggleKey.collectAsState()
     val dotSizeValue by cursorDotSizeDp.collectAsState()
     val alphaValue by logoAlpha.collectAsState()
+    val captureIndex by captureRequest.collectAsState()
+    val captured by capturedKey.collectAsState()
 
     // Giá trị trượt cục bộ: đồng bộ lại khi flow đổi từ nơi khác (vd tab
     // Cấu hình trong app đổi độ nhạy); lúc đang kéo thì flow chưa đổi nên
     // không bị giằng lại.
-    var sensSlider by remember { mutableStateOf(sensValue) }
+    var sensXSlider by remember { mutableStateOf(sensXValue) }
+    var sensYSlider by remember { mutableStateOf(sensYValue) }
+    var dampXSlider by remember { mutableStateOf(dampXValue.toFloat()) }
+    var dampYSlider by remember { mutableStateOf(dampYValue.toFloat()) }
+    var speedSlider by remember { mutableStateOf(speedValue) }
     var dotSlider by remember { mutableStateOf(dotSizeValue.toFloat()) }
     var alphaSlider by remember { mutableStateOf(alphaValue) }
-    LaunchedEffect(sensValue) { sensSlider = sensValue }
+    LaunchedEffect(sensXValue) { sensXSlider = sensXValue }
+    LaunchedEffect(sensYValue) { sensYSlider = sensYValue }
+    LaunchedEffect(dampXValue) { dampXSlider = dampXValue.toFloat() }
+    LaunchedEffect(dampYValue) { dampYSlider = dampYValue.toFloat() }
+    LaunchedEffect(speedValue) { speedSlider = speedValue }
     LaunchedEffect(dotSizeValue) { dotSlider = dotSizeValue.toFloat() }
     LaunchedEffect(alphaValue) { alphaSlider = alphaValue }
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(MENU_ITEM_HEIGHT)
-            .clickable { onBack() }
-            .padding(horizontal = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = "‹ Quay lại",
-            color = Color.White,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Bold,
-        )
-        Spacer(modifier = Modifier.weight(1f))
-        Text(text = "Cài đặt", color = Color.White.copy(alpha = 0.7f), fontSize = 14.sp)
+    // Phím ẩn/hiện lớp phủ vừa bắt được (index -1): áp dụng rồi xóa.
+    LaunchedEffect(captured) {
+        val c = captured ?: return@LaunchedEffect
+        if (c.first == -1) {
+            onOverlayKeyChange(c.second)
+            onClearCaptured()
+        }
     }
-    SettingSlider(
-        label = "Độ nhạy chuột",
-        valueText = "%.1f".format(sensSlider),
-        value = sensSlider,
-        range = 0.1f..5f,
-        onValueChange = { sensSlider = it },
-        onValueChangeFinished = { onSensitivityChange(sensSlider) },
-    )
-    SettingSlider(
-        label = "Kích thước con trỏ",
-        valueText = "${dotSlider.roundToInt()}dp",
-        value = dotSlider,
-        range = 12f..48f,
-        onValueChange = {
-            dotSlider = it
-            onCursorDotSizeChange(it.roundToInt())
-        },
-    )
-    SettingSlider(
-        label = "Độ trong suốt logo",
-        valueText = "${(alphaSlider * 100).roundToInt()}%",
-        value = alphaSlider,
-        range = 0.2f..1f,
-        onValueChange = {
-            alphaSlider = it
-            onLogoAlphaChange(it)
-        },
-    )
+
+    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(MENU_ITEM_HEIGHT)
+                .clickable { onBack() }
+                .padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "‹ Quay lại",
+                color = Color.White,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(modifier = Modifier.weight(1f))
+            Text(text = "Cài đặt", color = Color.White.copy(alpha = 0.7f), fontSize = 14.sp)
+        }
+        SettingSlider(
+            label = "Độ nhạy X (ngang)",
+            valueText = "%.1f".format(sensXSlider),
+            value = sensXSlider,
+            range = 0.1f..5f,
+            onValueChange = { sensXSlider = it },
+            onValueChangeFinished = { onSensXChange(sensXSlider) },
+        )
+        SettingSlider(
+            label = "Độ nhạy Y (dọc)",
+            valueText = "%.1f".format(sensYSlider),
+            value = sensYSlider,
+            range = 0.1f..5f,
+            onValueChange = { sensYSlider = it },
+            onValueChangeFinished = { onSensYChange(sensYSlider) },
+        )
+        SettingSlider(
+            label = "Đầm tâm X",
+            valueText = "${dampXSlider.roundToInt()}",
+            value = dampXSlider,
+            range = 1f..10f,
+            steps = 8,
+            onValueChange = { dampXSlider = it },
+            onValueChangeFinished = { onDampXChange(dampXSlider.roundToInt()) },
+        )
+        SettingSlider(
+            label = "Đầm tâm Y",
+            valueText = "${dampYSlider.roundToInt()}",
+            value = dampYSlider,
+            range = 1f..10f,
+            steps = 8,
+            onValueChange = { dampYSlider = it },
+            onValueChangeFinished = { onDampYChange(dampYSlider.roundToInt()) },
+        )
+        SettingSlider(
+            label = "Tốc độ con trỏ",
+            valueText = "%.1f".format(speedSlider),
+            value = speedSlider,
+            range = 0.5f..3f,
+            onValueChange = { speedSlider = it },
+            onValueChangeFinished = { onCursorSpeedChange(speedSlider) },
+        )
+        // Tần số quét chuột: bấm chip để chọn (áp dụng ngay).
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(text = "Tần số quét chuột", color = Color.White, fontSize = 14.sp)
+                Spacer(modifier = Modifier.weight(1f))
+                Text(
+                    text = "${pollHzValue}Hz",
+                    color = Color.White.copy(alpha = 0.7f),
+                    fontSize = 14.sp,
+                )
+            }
+            Row(
+                modifier = Modifier.padding(top = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                for (hz in Config.POLL_RATES) {
+                    Box(
+                        modifier = Modifier
+                            .background(
+                                if (hz == pollHzValue) Color(0xFF4CAF50)
+                                else Color.White.copy(alpha = 0.12f),
+                                RoundedCornerShape(8.dp),
+                            )
+                            .clickable { onPollRateChange(hz) }
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                    ) {
+                        Text(text = "${hz}Hz", color = Color.White, fontSize = 13.sp)
+                    }
+                }
+            }
+            Text(
+                text = "Tốc độ xử lý nội bộ của app, không đổi được polling rate phần cứng của chuột.",
+                color = Color.White.copy(alpha = 0.5f),
+                fontSize = 11.sp,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+        // Phím ẩn/hiện lớp phủ.
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(text = "Phím ẩn lớp phủ", color = Color.White, fontSize = 14.sp)
+                Spacer(modifier = Modifier.weight(1f))
+                Text(
+                    text = LinuxKey.name(overlayKeyValue),
+                    color = Color.White.copy(alpha = 0.7f),
+                    fontSize = 14.sp,
+                )
+            }
+            if (captureIndex == -1) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onCancelCapture() }
+                        .padding(vertical = 8.dp),
+                ) {
+                    Text(
+                        text = "Đang chờ bấm phím… (bấm để hủy)",
+                        color = Color(0xFFFFD54F),
+                        fontSize = 14.sp,
+                    )
+                }
+            } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onRequestOverlayKeyCapture() }
+                        .padding(vertical = 8.dp),
+                ) {
+                    Text(
+                        text = "Đổi phím (bấm rồi bấm phím mới)",
+                        color = Color(0xFF81C784),
+                        fontSize = 14.sp,
+                    )
+                }
+            }
+        }
+        SettingSlider(
+            label = "Kích thước con trỏ",
+            valueText = "${dotSlider.roundToInt()}dp",
+            value = dotSlider,
+            range = 12f..48f,
+            onValueChange = {
+                dotSlider = it
+                onCursorDotSizeChange(it.roundToInt())
+            },
+        )
+        SettingSlider(
+            label = "Độ trong suốt logo",
+            valueText = "${(alphaSlider * 100).roundToInt()}%",
+            value = alphaSlider,
+            range = 0.2f..1f,
+            onValueChange = {
+                alphaSlider = it
+                onLogoAlphaChange(it)
+            },
+        )
+    }
 }
 
 /** 1 hàng cài đặt: nhãn + giá trị ở trên, thanh trượt ở dưới. */
@@ -378,6 +610,7 @@ private fun SettingSlider(
     range: ClosedFloatingPointRange<Float>,
     onValueChange: (Float) -> Unit,
     onValueChangeFinished: (() -> Unit)? = null,
+    steps: Int = 0,
 ) {
     Column(
         modifier = Modifier
@@ -397,6 +630,7 @@ private fun SettingSlider(
             onValueChange = onValueChange,
             onValueChangeFinished = onValueChangeFinished,
             valueRange = range,
+            steps = steps,
         )
     }
 }
@@ -404,25 +638,24 @@ private fun SettingSlider(
 private fun Offset.distance(): Float = kotlin.math.sqrt(x * x + y * y)
 
 /**
- * Chấm con trỏ ảo (chế độ con trỏ): vòng tròn nhỏ trắng mờ, chỉ để nhìn
- * vị trí con trỏ trên màn hình game. Cửa sổ chứa nó đặt NOT_TOUCHABLE nên
- * không nhận chạm, không chặn game. Kích thước đọc từ [sizeDp] (đổi trong
- * bảng Cài đặt của nút nổi).
+ * Con trỏ ảo (chế độ con trỏ): HÌNH TAM GIÁC nhỏ hướng lên trên (build-9,
+ * trước là chấm tròn) — đỉnh tam giác là điểm nóng, nằm đúng vị trí con trỏ
+ * trên màn hình game. Cửa sổ chứa nó đặt NOT_TOUCHABLE nên không nhận chạm,
+ * không chặn game. Kích thước đọc từ [sizeDp] (đổi trong bảng Cài đặt của
+ * nút nổi, mặc định 18dp).
  */
 @Composable
 fun CursorDot(sizeDp: StateFlow<Int>) {
     val size by sizeDp.collectAsState()
-    Box(
-        modifier = Modifier
-            .size(size.dp)
-            .background(Color.White.copy(alpha = 0.25f), CircleShape)
-            .border(2.dp, Color.White, CircleShape),
-        contentAlignment = Alignment.Center,
-    ) {
-        Box(
-            modifier = Modifier
-                .size(6.dp)
-                .background(Color.White, CircleShape),
-        )
+    Canvas(modifier = Modifier.size(size.dp)) {
+        val w = size.dp.toPx()
+        val path = Path().apply {
+            moveTo(w / 2f, 0f) // đỉnh trên = điểm nóng
+            lineTo(w, w) // góc dưới phải
+            lineTo(0f, w) // góc dưới trái
+            close()
+        }
+        drawPath(path, color = Color.White.copy(alpha = 0.9f))
+        drawPath(path, color = Color(0xFF2E7D32), style = Stroke(width = 2.dp.toPx()))
     }
 }

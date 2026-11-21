@@ -91,6 +91,14 @@ object ServerManager {
     private val _reconnectDoneFlow = MutableStateFlow(false)
     val reconnectDoneFlow = _reconnectDoneFlow.asStateFlow()
 
+    /**
+     * Package app foreground mới nhất từ stream FG (build-9). OverlayService
+     * đọc để ẩn/hiện lớp phủ theo game (chỉ hiện khi đang trong game).
+     * null = chưa có event FG nào -> giữ hành vi cũ (hiện bình thường).
+     */
+    private val _fgPackageFlow = MutableStateFlow<String?>(null)
+    val fgPackageFlow = _fgPackageFlow.asStateFlow()
+
     // Người dùng đã bấm "Dừng Server" (tab Cài đặt) — auto-start không được
     // khởi động lại cho tới khi họ bấm khởi động tay (startServer xóa cờ này).
     // Chỉ lưu trong RAM: mở app lại từ đầu thì auto-start chạy như thường.
@@ -999,6 +1007,7 @@ object ServerManager {
         }
         fgSubscription = null
         lastFgPkg = null
+        _fgPackageFlow.value = null // Server dừng: không biết FG -> lớp phủ hiện bình thường
     }
 
     /**
@@ -1013,7 +1022,24 @@ object ServerManager {
             if (d != null) {
                 InputClient.sendDisplay(c.first, c.second, d.width, d.height, d.rotation, d.displayId)
             }
-            InputClient.sendProfile(c.first, c.second, ProfileCodec.toJson(profile))
+            val resp = InputClient.sendProfile(c.first, c.second, ProfileCodec.toJson(profile))
+            // Build-9: đồng bộ thêm các cài đặt không nằm trong profile
+            // (tần số quét chuột, tốc độ con trỏ, trạng thái ẩn lớp phủ)
+            // để Server khởi động lại vẫn khớp với app. Lỗi thì bỏ qua
+            // (không làm hỏng PROFILE).
+            if (resp.startsWith("OK")) {
+                runCatching {
+                    InputClient.setPollRate(c.first, c.second, KeyTouchPrefs.pollRateHz(context))
+                    InputClient.sendTouchCfg(
+                        c.first, c.second,
+                        mapOf("cursorSpeed" to KeyTouchPrefs.cursorSpeed(context)),
+                    )
+                    InputClient.setOverlayHidden(
+                        c.first, c.second, KeyTouchPrefs.overlayHidden(context),
+                    )
+                }
+            }
+            resp
         } catch (e: Exception) {
             "ERR ${e.message}"
         }
@@ -1029,6 +1055,10 @@ object ServerManager {
     private fun handleFgChange(context: Context, pkg: String) {
         if (pkg == lastFgPkg) return
         lastFgPkg = pkg
+        // Build-9: báo package foreground cho OverlayService (ẩn/hiện lớp
+        // phủ theo game) — làm TRƯỚC kiểm tra auto-switch vì ẩn/hiện lớp
+        // phủ phải chạy cả khi người dùng tắt tự đổi profile.
+        _fgPackageFlow.value = pkg
         if (!isAutoSwitchEnabled(context)) return
         scope.launch {
             fgSwitchMutex.withLock {

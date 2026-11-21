@@ -55,8 +55,13 @@ object Config {
     const val JOY_RADIUS = 0.055f
     const val CAM_CENTER_X = 0.58f
     const val CAM_CENTER_Y = 0.50f
-    const val CAM_HALF_W = 0.26f
+    // Camera (FPS Look) là VÙNG TRÒN (build-9, trước là chữ nhật): CAM_HALF_W
+    // là BÁN KÍNH theo tỉ lệ chiều rộng (~70dp trên máy 2560px). CAM_HALF_H
+    // giữ lại cho tương thích TOUCHCFG/profile cũ — logic tròn chỉ dùng bán kính.
+    const val CAM_HALF_W = 0.055f
     const val CAM_HALF_H = 0.32f
+    const val CAM_RADIUS_MIN = 0.02f
+    const val CAM_RADIUS_MAX = 0.12f
     const val SENS_X = 1.0f
     const val SENS_Y = 1.0f
     const val MAP_TOGGLE_KEY = LinuxKey.F8
@@ -64,6 +69,9 @@ object Config {
     // Chế độ con trỏ: chuột di chuyển 1 con trỏ ảo, chuột trái bấm tại
     // vị trí con trỏ (để bấm giao diện game); nhìn tự do: chuột kéo camera.
     const val CURSOR_TOGGLE_KEY = LinuxKey.F9
+    // Build-9: phím ẩn/hiện lớp phủ mặc định (F10 — tránh F8 bật/tắt MAP,
+    // F9 đổi chế độ con trỏ). Gán lại được trong bảng Cài đặt của nút K.
+    const val OVERLAY_TOGGLE_KEY = LinuxKey.F10
 
     // Camera: khi chuột ra khỏi vùng thì tự nhấc rồi chạm lại ở rìa ĐỐI
     // DIỆN (không phải tâm) để mỗi lần vuốt đi được hết chiều rộng vùng.
@@ -119,4 +127,38 @@ object Config {
     // GĐ6: theo dõi app foreground (tự đổi profile theo game)
     const val FG_POLL_MS = 1_000L // quét app foreground mỗi 1 giây
     const val FG_QUEUE_CAPACITY = 16 // hàng đợi đẩy FG về app (sự kiện hiếm)
+
+    // Build-9: tần số quét chuột (polling rate) — TỐC ĐỘ XỬ LÝ NỘI BỘ của
+    // app (chu kỳ thăm dò vị trí con trỏ + gộp MOVE tiêm), KHÔNG phải
+    // polling rate phần cứng của chuột USB (app không đổi được cái đó).
+    // 125Hz→8ms, 250Hz→4ms, 500Hz→2ms, 1000Hz→1ms. Mặc định 500Hz.
+    val POLL_RATES = listOf(125, 250, 500, 1000)
+    const val DEFAULT_POLL_RATE_HZ = 500
+
+    /** Chu kỳ xử lý (ms) theo tần số quét: kẹp 1..8ms. */
+    fun pollIntervalMs(hz: Int): Long =
+        (1000L / hz.coerceIn(POLL_RATES.first(), POLL_RATES.last())).coerceIn(1L, 8L)
+
+    // Build-9: Đầm tâm (aim damping) — làm mượt delta chuột REL theo từng
+    // trục bằng EMA: alpha = 1/mức. Mức 1 = không làm mượt (delta thô);
+    // mức cao = đầm hơn, bớt rung nhưng phản hồi chậm hơn và chuyển động
+    // nhanh bị nén lại (bù bằng độ nhạy).
+    const val DAMP_MIN = 1
+    const val DAMP_MAX = 10
+    const val DAMP_DEFAULT = 1
+
+    // Build-9: Tự động Tap / Thả Tap / Macro.
+    const val AUTO_TAP_HOLD_MS = 40L // mỗi lần tap giữ ngón 40ms rồi nhả
+    const val AUTO_TAP_INTERVAL_DEFAULT_MS = 100L
+    const val AUTO_TAP_INTERVAL_MIN_MS = 50L
+    const val AUTO_TAP_INTERVAL_MAX_MS = 2000L
+    const val MACRO_TAP_HOLD_MS = 40L
+    const val MACRO_WAIT_MAX_MS = 10_000L
+
+    // Build-9: tốc độ con trỏ ảo (chế độ con trỏ) — hệ số nhân delta chuột
+    // REL trước khi cập nhật vị trí con trỏ. KHÁC độ nhạy X/Y (tốc độ xoay
+    // camera ở chế độ nhìn tự do). Lưu SharedPreferences, không nằm trong profile.
+    const val CURSOR_SPEED_MIN = 0.5f
+    const val CURSOR_SPEED_MAX = 3.0f
+    const val CURSOR_SPEED_DEFAULT = 1.0f
 }

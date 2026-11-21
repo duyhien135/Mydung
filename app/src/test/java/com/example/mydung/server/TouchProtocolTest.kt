@@ -106,12 +106,12 @@ class TouchProtocolTest {
             injectOk = true,
         )
         assertEquals(
-            "MAP map=1 display=2560x1600 pointers=2 latencyMs=4 injectErr=0 injectOk=1 injector=reflect mode=camera cursor=0.50,0.50",
+            "MAP map=1 display=2560x1600 pointers=2 latencyMs=4 injectErr=0 injectOk=1 injector=reflect mode=camera cursor=0.50,0.50 overlay=0",
             s,
         )
         val s2 = TouchProtocol.formatMapStatus(false, null, 0, 0, 3, false)
         assertEquals(
-            "MAP map=0 display=none pointers=0 latencyMs=0 injectErr=3 injectOk=0 injector=reflect mode=camera cursor=0.50,0.50",
+            "MAP map=0 display=none pointers=0 latencyMs=0 injectErr=3 injectOk=0 injector=reflect mode=camera cursor=0.50,0.50 overlay=0",
             s2,
         )
         assertTrue(s2.contains("display=none"))
@@ -146,7 +146,55 @@ class TouchProtocolTest {
             injector = "evdev",
         )
         assertTrue(s.contains("injector=evdev"))
-        assertTrue(s.endsWith("cursor=0.50,0.50"))
+        assertTrue(s.contains("cursor=0.50,0.50"))
+        // Build-9: cuối dòng thêm overlay=0 (lớp phủ không bị ẩn).
+        assertTrue(s.endsWith("overlay=0"))
+    }
+
+    @Test
+    fun formatMapStatus_overlayHidden() {
+        val s = TouchProtocol.formatMapStatus(
+            mapOn = true,
+            display = null,
+            pointers = 0,
+            latencyMs = 0,
+            injectErr = 0,
+            injectOk = true,
+            overlayHidden = true,
+        )
+        assertTrue(s.endsWith("overlay=1"))
+    }
+
+    @Test
+    fun parsePollRate_validAndInvalid() {
+        assertEquals(125, TouchProtocol.parsePollRate("POLLRATE 125"))
+        assertEquals(250, TouchProtocol.parsePollRate("POLLRATE 250"))
+        assertEquals(500, TouchProtocol.parsePollRate("POLLRATE 500"))
+        assertEquals(1000, TouchProtocol.parsePollRate("POLLRATE 1000"))
+        assertNull(TouchProtocol.parsePollRate("POLLRATE 60")) // không trong danh sách
+        assertNull(TouchProtocol.parsePollRate("POLLRATE 2000"))
+        assertNull(TouchProtocol.parsePollRate("POLLRATE abc"))
+        assertNull(TouchProtocol.parsePollRate("POLLRATE"))
+        assertNull(TouchProtocol.parsePollRate("POLLRATE 500 extra"))
+    }
+
+    @Test
+    fun parseOverlay_validAndInvalid() {
+        assertEquals(true, TouchProtocol.parseOverlay("OVERLAY 1"))
+        assertEquals(false, TouchProtocol.parseOverlay("OVERLAY 0"))
+        assertNull(TouchProtocol.parseOverlay("OVERLAY 2"))
+        assertNull(TouchProtocol.parseOverlay("OVERLAY"))
+        assertNull(TouchProtocol.parseOverlay("OVERLAY 1 extra"))
+    }
+
+    @Test
+    fun parseTouchCfg_build9Keys() {
+        val v = TouchProtocol.parseTouchCfg("TOUCHCFG dampX=3 dampY=5 cursorSpeed=1.5 overlayKey=68")
+        assertEquals(3f, v?.get("dampX"))
+        assertEquals(5f, v?.get("dampY"))
+        assertEquals(1.5f, v?.get("cursorSpeed"))
+        assertEquals(68f, v?.get("overlayKey"))
+        assertNull(TouchProtocol.parseTouchCfg("TOUCHCFG foo=1")) // khóa lạ: từ chối cả lệnh
     }
 
     @Test
