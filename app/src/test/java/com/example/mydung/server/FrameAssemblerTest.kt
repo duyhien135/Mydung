@@ -1,5 +1,6 @@
 package com.example.mydung.server
 
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -153,7 +154,29 @@ class InputProtocolTest {
     }
 }
 
+/** Fake EvdevIoctl cho test: trả outcome cố định, ghi lại fd đã grab. */
+private class FakeEvdevIoctl(
+    private val outcome: GrabOutcome,
+    override val strategyName: String = "fake",
+) : EvdevIoctl {
+    var grabbedFds = ArrayList<java.io.FileDescriptor>()
+    override fun resolve() { /* không dò gì */ }
+    override fun grab(fd: java.io.FileDescriptor): GrabOutcome {
+        grabbedFds.add(fd)
+        return outcome
+    }
+}
+
+/** Giả android.system.ErrnoException: cùng tên đơn + field errno công khai. */
+class ErrnoException(@JvmField val errno: Int) : Exception("fake errno $errno")
+
 class GrabberTest {
+
+    @After
+    fun restoreBackend() {
+        // Backend fake không được rò sang test khác (JUnit chạy chung 1 JVM).
+        Grabber.setIoctlForTest(ReflectiveEvdevIoctl())
+    }
 
     @Test
     fun eviocgrab_constant() {
@@ -162,14 +185,61 @@ class GrabberTest {
     }
 
     @Test
-    fun probe_withoutLibcore_fallsBackToB() {
-        // Trên JVM thường không có libcore.io.Libcore -> phải rơi về cách B, không ném lỗi.
-        assertEquals(Grabber.Method.B_NONE, Grabber.probe())
+    fun resolve_withoutAndroidClasses_fallsBackToNone() {
+        // Trên JVM thường không có libcore/android.system.Os -> none, không ném lỗi.
+        val ioctl = ReflectiveEvdevIoctl()
+        ioctl.resolve()
+        assertEquals("none", ioctl.strategyName)
+        assertEquals(GrabOutcome.Failed("không có ioctl"), ioctl.grab(java.io.FileDescriptor()))
     }
 
     @Test
     fun grab_withoutIoctl_returnsFalse() {
-        Grabber.probe()
-        assertEquals(false, Grabber.grab(java.io.FileDescriptor(), true))
+        Grabber.resolve()
+        assertEquals("none", Grabber.strategyName)
+        assertEquals(false, Grabber.grab(java.io.FileDescriptor()))
+    }
+
+    @Test
+    fun grab_withFakeSuccess_returnsTrue() {
+        val fake = FakeEvdevIoctl(GrabOutcome.Grabbed)
+        Grabber.setIoctlForTest(fake)
+        val fd = java.io.FileDescriptor()
+        assertEquals(true, Grabber.grab(fd))
+        assertEquals(listOf(fd), fake.grabbedFds)
+        assertEquals("fake", Grabber.strategyName)
+    }
+
+    @Test
+    fun grab_withFakeBusy_returnsFalse() {
+        Grabber.setIoctlForTest(FakeEvdevIoctl(GrabOutcome.Busy))
+        assertEquals(false, Grabber.grab(java.io.FileDescriptor()))
+    }
+
+    @Test
+    fun grab_withFakeFailure_returnsFalse() {
+        Grabber.setIoctlForTest(FakeEvdevIoctl(GrabOutcome.Failed("lỗi giả")))
+        assertEquals(false, Grabber.grab(java.io.FileDescriptor()))
+    }
+}
+
+class ExtractErrnoTest {
+
+    @Test
+    fun extractErrno_unwrapsInvocationTarget() {
+        val wrapped = java.lang.reflect.InvocationTargetException(ErrnoException(16))
+        assertEquals(16, extractErrno(wrapped))
+    }
+
+    @Test
+    fun extractErrno_direct() {
+        assertEquals(9, extractErrno(ErrnoException(9)))
+    }
+
+    @Test
+    fun extractErrno_nonErrno_returnsNull() {
+        assertEquals(null, extractErrno(RuntimeException("x")))
+        val wrapped = java.lang.reflect.InvocationTargetException(RuntimeException("x"))
+        assertEquals(null, extractErrno(wrapped))
     }
 }

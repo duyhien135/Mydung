@@ -64,7 +64,7 @@ object InputHub {
     fun start() {
         if (started) return
         started = true
-        Grabber.probe()
+        Grabber.resolve()
         InputBus.subscribe(comboListener)
         InputBus.subscribe(logListener)
         scanner.start()
@@ -128,11 +128,7 @@ object InputHub {
                 ungrabDevice(info)
             }
         }
-        val method = when (Grabber.method) {
-            Grabber.Method.A_REFLECTION -> "A"
-            Grabber.Method.C_OS -> "C"
-            Grabber.Method.B_NONE -> "B"
-        }
+        val method = Grabber.strategyName
         Server.log("GRAB $target=$on: chiếm được $grabbed, lỗi $failed (cách $method).")
         return "OK GRAB mouse=${if (grabMouse) 1 else 0} keyboard=${if (grabKeyboard) 1 else 0} " +
             "method=$method grabbed=$grabbed failed=$failed"
@@ -148,7 +144,7 @@ object InputHub {
 
     private fun grabDevice(info: InputDeviceInfo): Boolean {
         val fd = scanner.readerFor(info.id)?.fd ?: return false
-        if (Grabber.grab(fd, true)) {
+        if (Grabber.grab(fd)) {
             synchronized(grabbedIds) { grabbedIds.add(info.id) }
             return true
         }
@@ -156,9 +152,15 @@ object InputHub {
     }
 
     private fun ungrabDevice(info: InputDeviceInfo) {
-        val fd = scanner.readerFor(info.id)?.fd ?: return
-        Grabber.grab(fd, false)
-        synchronized(grabbedIds) { grabbedIds.remove(info.id) }
+        // Chỉ mở lại reader khi thiết bị thực sự đang bị grab — nếu không
+        // chỉ tốn 1 lần đóng/mở luồng đọc vô ích.
+        val wasGrabbed = synchronized(grabbedIds) { grabbedIds.remove(info.id) }
+        if (!wasGrabbed) return
+        // Nhả GRAB = đóng fd (kernel tự nhả khi fd đóng) rồi mở lại reader
+        // để vẫn đọc được event — không nhả được bằng ioctl (EVIOCGRAB
+        // chỉ nhận con trỏ, NULL = nhả mà ioctlInt không truyền được NULL).
+        // Xem Grabber.
+        scanner.reopenReader(info.id)
     }
 
     /** Nhả mọi GRAB và tắt chế độ map (map ở GĐ4; GĐ3 chỉ nhả GRAB). */

@@ -33,6 +33,30 @@ class DeviceScanner(
 
     fun readerFor(id: String): DeviceReader? = synchronized(lock) { readers[id] }
 
+    /**
+     * Đóng reader rồi mở lại ngay. Dùng để nhả GRAB: kernel tự nhả khi
+     * fd đóng (không nhả được bằng ioctl — xem Grabber). Mở lại ngay nên
+     * gần như không mất event; KHÔNG phát onDeviceAdded (tránh re-grab
+     * ngay lúc đang nhả) và không phát EV DEV (thiết bị không hề biến mất).
+     * Trả false nếu thiết bị không còn trong map hoặc mở lại thất bại
+     * (thiết bị rút đúng lúc đó — vòng quét sẽ thêm lại sau).
+     */
+    fun reopenReader(id: String): Boolean {
+        synchronized(lock) {
+            val old = readers.remove(id) ?: return false
+            val info = old.info
+            old.close()
+            val reader = DeviceReader(info, onEvent)
+            if (!reader.open()) {
+                Server.log("Mở lại ${info.node} sau khi nhả GRAB thất bại.")
+                return false
+            }
+            readers[id] = reader
+            reader.start()
+            return true
+        }
+    }
+
     fun start() {
         if (running) return
         running = true

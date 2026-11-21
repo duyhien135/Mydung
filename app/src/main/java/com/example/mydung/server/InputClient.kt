@@ -45,7 +45,7 @@ object InputClient {
         }
     }
 
-    /** Gửi lệnh GRAB, trả phản hồi dạng "OK GRAB mouse=1 keyboard=0 method=A grabbed=2 failed=0". */
+    /** Gửi lệnh GRAB, trả phản hồi dạng "OK GRAB mouse=1 keyboard=0 method=lc-mut grabbed=2 failed=0". */
     fun setGrab(port: Int, token: String, target: String, on: Boolean): String {
         return command(port, token, "GRAB $target ${if (on) 1 else 0}")
     }
