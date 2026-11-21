@@ -120,7 +120,7 @@ class ProfileCodecTest {
         assertEquals(Config.CAM_HALF_W, l.camHW, 0.001f)
         // Vùng camera vuông theo pixel: nửa cao = nửa rộng * 2560/1600.
         assertEquals(Config.CAM_HALF_W * 2560f / 1600f, l.camHH, 0.001f)
-        assertEquals(Config.DEFAULT_BUTTONS, l.buttons)
+        assertEquals(Config.DEFAULT_BUTTONS.mapValues { listOf(it.value) }, l.buttons)
         assertEquals(Config.MAP_TOGGLE_KEY, l.mapToggleKey)
     }
 
@@ -138,7 +138,7 @@ class ProfileCodecTest {
         assertEquals(Config.CAM_CENTER_X, l.camX, 0.001f)
         assertEquals(2f, l.sensX, 0.001f)
         assertEquals(LinuxKey.F9, l.mapToggleKey)
-        assertEquals(mapOf(LinuxKey.SPACE to (0.5f to 0.5f)), l.buttons)
+        assertEquals(mapOf(LinuxKey.SPACE to listOf(0.5f to 0.5f)), l.buttons)
     }
 
     @Test
@@ -199,7 +199,7 @@ class ProfileCodecTest {
         assertEquals(null, el.x2)
         assertEquals(400L, el.durationMs)
         val l = p.toLayout(1000, 500)
-        val spec = l.swipes[LinuxKey.Q]
+        val spec = l.swipes[LinuxKey.Q]?.single()
         assertTrue(spec != null)
         assertEquals(0.3f, spec!!.x1, 0.001f)
         assertEquals(0.45f, spec.x2, 0.001f) // x + 0.15 mặc định
@@ -225,7 +225,7 @@ class ProfileCodecTest {
         )
         val l = p.toLayout(1000, 500)
         assertEquals(1, l.swipes.size)
-        val spec = l.swipes[LinuxKey.E]!!
+        val spec = l.swipes[LinuxKey.E]!!.single()
         assertEquals(0.2f, spec.x1, 0.001f)
         assertEquals(0.8f, spec.x2, 0.001f)
         assertEquals(250L, spec.durationMs)
@@ -310,9 +310,9 @@ class ProfileCodecTest {
         )
         val l = p.toLayout(1000, 500)
         assertEquals(1, l.autoTaps.size)
-        assertEquals(150L, l.autoTaps[LinuxKey.Q]?.intervalMs)
+        assertEquals(150L, l.autoTaps[LinuxKey.Q]?.single()?.intervalMs)
         assertEquals(1, l.releaseTaps.size)
-        assertEquals(0.6f, l.releaseTaps[LinuxKey.E]!!.first, 0.001f)
+        assertEquals(0.6f, l.releaseTaps[LinuxKey.E]!!.single().first, 0.001f)
         assertEquals(setOf(LinuxKey.V), l.freeLookKeys)
         assertEquals(1, l.macros.size)
         assertTrue(l.macros.containsKey(LinuxKey.R))
@@ -402,5 +402,52 @@ class ProfileCodecTest {
         val l = p.toLayout(1000, 500)
         assertEquals(Config.CURSOR_REGION_RIGHT, l.cursorRegion)
         assertEquals(LinuxKey.F12, l.mouseToggleKey)
+    }
+
+    // ── Build-12: 1 phím gán nhiều phần tử + lăn chuột ──
+
+    @Test
+    fun toLayout_duplicateKeys_keptAsLists() {
+        // 2 nút + 1 macro cùng phím Q, 2 vuốt cùng phím E — trước build-12
+        // phần tử sau ghi đè phần tử trước (chỉ 1 kích hoạt).
+        val p = Profile(
+            id = "x", name = "Trùng", packageName = null, schemaVersion = 1,
+            sensX = 20, sensY = 20, mapToggleKey = LinuxKey.F8,
+            elements = listOf(
+                ProfileElement(ElementType.BUTTON, 0.5f, 0.5f, 0.03f, LinuxKey.Q, "Nút 1"),
+                ProfileElement(ElementType.BUTTON, 0.8f, 0.8f, 0.03f, LinuxKey.Q, "Nút 2"),
+                ProfileElement(
+                    ElementType.MACRO, 0.4f, 0.4f, 0.03f, LinuxKey.Q, "Macro",
+                    steps = listOf(MacroStep(MacroStepKind.TAP, 0.5f, 0.5f)),
+                ),
+                ProfileElement(
+                    ElementType.SWIPE, 0.2f, 0.5f, 0.03f, LinuxKey.E, "Vuốt 1",
+                    enabled = true, x2 = 0.8f, y2 = 0.5f, durationMs = 250L,
+                ),
+                ProfileElement(
+                    ElementType.SWIPE, 0.2f, 0.2f, 0.03f, LinuxKey.E, "Vuốt 2",
+                    enabled = true, x2 = 0.8f, y2 = 0.2f, durationMs = 250L,
+                ),
+            ),
+        )
+        val l = p.toLayout(1000, 500)
+        assertEquals(2, l.buttons[LinuxKey.Q]!!.size)
+        assertEquals(0.5f to 0.5f, l.buttons[LinuxKey.Q]!![0])
+        assertEquals(0.8f to 0.8f, l.buttons[LinuxKey.Q]!![1])
+        assertEquals(1, l.macros[LinuxKey.Q]!!.size) // macro cùng phím Q vẫn giữ
+        assertEquals(2, l.swipes[LinuxKey.E]!!.size)
+    }
+
+    @Test
+    fun toLayout_wheelCode_keptAsButton() {
+        // Lăn lên (mã nội bộ 1000) gán như phím thường — JSON lưu key=1000.
+        val p = ok(
+            """{"name":"X","elements":[
+               {"type":"BUTTON","x":0.9,"y":0.2,"key":1000,"name":"Lăn lên"}
+            ]}""",
+        )
+        assertEquals(LinuxKey.WHEEL_UP, p.elements.single().keyCode)
+        val l = p.toLayout(1000, 500)
+        assertEquals(listOf(0.9f to 0.2f), l.buttons[LinuxKey.WHEEL_UP])
     }
 }

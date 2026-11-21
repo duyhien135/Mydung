@@ -178,6 +178,15 @@ object TouchProtocol {
         overlayHidden: Boolean = false,
         mouseEnabled: Boolean = true,
         grabMethod: String = "none",
+        // Build-12 (chẩn đoán lỗi grab trên máy thật): số thiết bị grab
+        // THÀNH CÔNG hiện tại, số lỗi ở lần grab gần nhất, số thiết bị
+        // Server đang mở được. grab=lc-mut mà grabbed=0 thì grab chưa ăn;
+        // devices=0 thì Server không đọc được thiết bị nào (mở fd lỗi hay
+        // bị lọc ở bước classify) — đó là gốc của tam giác đứng im + gán
+        // phím không ăn (không có event nào tới được TouchMapper).
+        grabbed: Int = 0,
+        grabFailed: Int = 0,
+        devices: Int = 0,
     ): String {
         val d = display?.let { "${it.width}x${it.height}" } ?: "none"
         // Locale.US: dấu thập phân luôn là "." (locale vi dùng "," sẽ làm hỏng parse).
@@ -186,6 +195,7 @@ object TouchProtocol {
         return "MAP map=${if (mapOn) 1 else 0} display=$d pointers=$pointers " +
             "latencyMs=$latencyMs injectErr=$injectErr injectOk=${if (injectOk) 1 else 0} " +
             "injector=$injector mode=$mode cursor=$cx,$cy overlay=${if (overlayHidden) 1 else 0} " +
-            "mouse=${if (mouseEnabled) 1 else 0} grab=$grabMethod"
+            "mouse=${if (mouseEnabled) 1 else 0} grab=$grabMethod " +
+            "grabbed=$grabbed failed=$grabFailed devices=$devices"
     }
 }

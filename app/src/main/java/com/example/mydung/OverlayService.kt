@@ -111,6 +111,11 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         // Build-11: mouse=0/1 (chuột bật/tắt) + grab= tên strategy GRAB.
         private val MOUSE_REGEX = Regex("mouse=(\\d)")
         private val GRAB_REGEX = Regex("grab=([A-Za-z0-9_-]+)")
+        // Build-12: số liệu grab thật + số thiết bị Server thấy (chẩn đoán
+        // lỗi grab trên máy thật).
+        private val GRABBED_REGEX = Regex("grabbed=(\\d+)")
+        private val GRAB_FAILED_REGEX = Regex("failed=(\\d+)")
+        private val DEVICES_REGEX = Regex("devices=(\\d+)")
         // Build-11: di chuyển tam giác con trỏ tối đa ~120 lần/giây (8ms)
         // để đỡ gọi binder liên tục ở tần số quét cao (500Hz/NO LIMIT).
         private const val CURSOR_DOT_MIN_MOVE_INTERVAL_MS = 8L
@@ -245,6 +250,13 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
     /** Cách GRAB đang dùng trên Server ("lc-mut", "none"...) — đọc từ
      *  MAPSTATUS grab=, hiện ở bảng Cài đặt để chẩn đoán lỗi 2 con trỏ. */
     val grabMethod = MutableStateFlow("none")
+    /**
+     * Chi tiết grab thật (build-12): vd "đã grab 2/3 · lỗi 0" hay "Server
+     * không thấy thiết bị nào" (devices=0). Hiện dưới dòng "Grab chuột"
+     * trong bảng Cài đặt nút K — strategy grab=lc-mut chỉ nói cách ioctl
+     * dò được, số này mới nói grab có ăn thật không.
+     */
+    val grabDetail = MutableStateFlow("")
 
     /** Kích thước chấm con trỏ (dp) — thanh trượt trong bảng Cài đặt. */
     val cursorDotSizeDp = MutableStateFlow(CURSOR_DOT_DEFAULT_DP)
@@ -554,6 +566,7 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                 cursorSpeed = cursorSpeed,
                 overlayToggleKey = overlayToggleKey,
                 grabMethod = grabMethod,
+                grabDetail = grabDetail,
                 cursorDotSizeDp = cursorDotSizeDp,
                 captureRequest = captureRequest,
                 capturedKey = capturedKey,
@@ -1147,6 +1160,19 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                     mouseOn.value = mouseIsOn
                     GRAB_REGEX.find(resp)?.groupValues?.get(1)?.let {
                         if (it.isNotBlank()) grabMethod.value = it
+                    }
+                    // Build-12: số liệu grab thật + số thiết bị Server thấy.
+                    val grabbedN = GRABBED_REGEX.find(resp)?.groupValues?.get(1)?.toIntOrNull()
+                    val failedN = GRAB_FAILED_REGEX.find(resp)?.groupValues?.get(1)?.toIntOrNull()
+                    val devicesN = DEVICES_REGEX.find(resp)?.groupValues?.get(1)?.toIntOrNull()
+                    if (grabbedN != null && failedN != null && devicesN != null) {
+                        val detail = if (devicesN == 0) {
+                            "Server không thấy thiết bị nào"
+                        } else {
+                            "đã grab $grabbedN/$devicesN" +
+                                if (failedN > 0) " · lỗi $failedN" else ""
+                        }
+                        if (grabDetail.value != detail) grabDetail.value = detail
                     }
                     // Build-9: phím ẩn/hiện lớp phủ đổi trạng thái ẩn lớp
                     // phủ trên Server — app đọc overlay= rồi tự ẩn/hiện

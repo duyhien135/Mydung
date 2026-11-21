@@ -67,7 +67,7 @@ import com.example.mydung.OverlayService
 import kotlinx.coroutines.flow.StateFlow
 import kotlin.math.roundToInt
 
-/** Các loại phần tử gán phím được (kiểm tra phím trùng + hàng "Gán phím"). */
+/** Các loại phần tử gán phím được (hàng "Gán phím"). Build-12: 1 phím gán được cho nhiều phần tử nên không kiểm tra trùng nữa. */
 private val KEYED_TYPES = setOf(
     ElementType.BUTTON, ElementType.SWIPE, ElementType.AUTO_TAP,
     ElementType.RELEASE_TAP, ElementType.FREE_LOOK, ElementType.MACRO,
@@ -144,7 +144,6 @@ fun EditorOverlay(
     // Build-11: vị trí (tỉ lệ) đang đề xuất gán nhanh Tap (chạm khoảng trống).
     var quickAssignPos by remember { mutableStateOf<Pair<Float, Float>?>(null) }
     var undoStack by remember { mutableStateOf<List<List<ProfileElement>>>(emptyList()) }
-    var warning by remember { mutableStateOf<String?>(null) }
     var sliderUndoPushed by remember { mutableStateOf(false) }
     var showAddMenu by remember { mutableStateOf(false) }
     // Build-11: nhận diện double-tap (2 lần chạm cùng phần tử trong 300ms).
@@ -269,7 +268,9 @@ fun EditorOverlay(
         val (index, code) = c
         when (index) {
             // Build-11: gán nhanh Tap tại khoảng trống — tạo nút mới tại
-            // vị trí đã chạm, phím trùng thì báo (không tạo).
+            // vị trí đã chạm. Build-12: 1 phím gán được cho nhiều phần tử
+            // nên không chặn trùng phím nữa (bấm phím thì TẤT CẢ cùng kích
+            // hoạt).
             -2 -> {
                 val pos = quickAssignPos
                 quickAssignPos = null
@@ -277,22 +278,14 @@ fun EditorOverlay(
                     onClearCaptured()
                     return@LaunchedEffect
                 }
-                val dup = currentElements.indexOfFirst {
-                    it.enabled && it.keyCode == code && it.type in KEYED_TYPES
-                }
-                if (dup >= 0) {
-                    warning = "Phím ${LinuxKey.name(code)} đã gán cho \"${currentElements[dup].name}\"."
-                } else {
-                    pushUndo()
-                    val newIndex = currentElements.size
-                    elements = currentElements + ProfileElement(
-                        ElementType.BUTTON, pos.first, pos.second,
-                        Config.DEFAULT_BUTTON_SIZE, code, LinuxKey.name(code),
-                    )
-                    selected = newIndex
-                    panelIndex = null
-                    warning = null
-                }
+                pushUndo()
+                val newIndex = currentElements.size
+                elements = currentElements + ProfileElement(
+                    ElementType.BUTTON, pos.first, pos.second,
+                    Config.DEFAULT_BUTTON_SIZE, code, LinuxKey.name(code),
+                )
+                selected = newIndex
+                panelIndex = null
                 onClearCaptured()
                 return@LaunchedEffect
             }
@@ -310,21 +303,17 @@ fun EditorOverlay(
             }
         }
         // Gán phím cho phần tử (chỉ khi index còn đúng phần tử đang mở bảng).
+        // Build-12: 1 phím gán được cho nhiều phần tử nên không chặn trùng
+        // phím giữa các phần tử (bấm phím thì TẤT CẢ cùng kích hoạt). Chặn
+        // trùng chỉ còn cho phím hệ thống (F8/F9/phím lớp phủ/phím bật tắt
+        // chuột) — kiểm tra ở OverlayService.applyMouseKey/applyOverlayKey.
         if (index !in currentElements.indices || index != panelIndex) {
             onClearCaptured()
             return@LaunchedEffect
         }
-        val dup = currentElements.indexOfFirst {
-            it.enabled && it.keyCode == code && it.type in KEYED_TYPES
-        }
-        if (dup >= 0 && dup != index) {
-            warning = "Phím ${LinuxKey.name(code)} đã gán cho \"${currentElements[dup].name}\"."
-        } else {
-            pushUndo()
-            elements = currentElements.mapIndexed { i, e ->
-                if (i == index) e.copy(keyCode = code) else e
-            }
-            warning = null
+        pushUndo()
+        elements = currentElements.mapIndexed { i, e ->
+            if (i == index) e.copy(keyCode = code) else e
         }
         onClearCaptured()
     }
@@ -538,8 +527,9 @@ fun EditorOverlay(
             OutlinedButton(onClick = onCancel) { Text("Hủy", color = Color.White) }
         }
 
-        // Cảnh báo (phím trùng / phần tử trùng vùng nút nổi K).
-        if (warning != null || floatOverlapNames.isNotEmpty()) {
+        // Cảnh báo phần tử trùng vùng nút nổi K (build-12: đã bỏ cảnh báo
+        // phím trùng — 1 phím gán được cho nhiều phần tử).
+        if (floatOverlapNames.isNotEmpty()) {
             Column(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
@@ -547,27 +537,15 @@ fun EditorOverlay(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                warning?.let { w ->
-                    Text(
-                        text = w,
-                        color = Color(0xFFFFB4A2),
-                        fontSize = 13.sp,
-                        modifier = Modifier
-                            .background(Color.Black.copy(alpha = 0.65f), RoundedCornerShape(6.dp))
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                    )
-                }
-                if (floatOverlapNames.isNotEmpty()) {
-                    Text(
-                        text = "⚠ ${floatOverlapNames.take(3).joinToString(", ")} trùng vùng nút nổi K — " +
-                            "chạm tiêm vào đó có thể bị nút nổi nuốt. Kéo nút K ra chỗ khác (trong game) hoặc dời phần tử.",
-                        color = Color(0xFFFFB4A2),
-                        fontSize = 13.sp,
-                        modifier = Modifier
-                            .background(Color.Black.copy(alpha = 0.65f), RoundedCornerShape(6.dp))
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                    )
-                }
+                Text(
+                    text = "⚠ ${floatOverlapNames.take(3).joinToString(", ")} trùng vùng nút nổi K — " +
+                        "chạm tiêm vào đó có thể bị nút nổi nuốt. Kéo nút K ra chỗ khác (trong game) hoặc dời phần tử.",
+                    color = Color(0xFFFFB4A2),
+                    fontSize = 13.sp,
+                    modifier = Modifier
+                        .background(Color.Black.copy(alpha = 0.65f), RoundedCornerShape(6.dp))
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                )
             }
         }
 
@@ -613,7 +591,7 @@ fun EditorOverlay(
                                 )
                                 if (captureIndex == i) {
                                     OutlinedButton(onClick = onCancelCapture) {
-                                        Text("Đang chờ bấm phím… (bấm để hủy)")
+                                        Text("Đang chờ bấm phím/chuột… (bấm để hủy)")
                                     }
                                 } else {
                                     Button(onClick = { onRequestKeyCapture(i) }) {
@@ -1326,12 +1304,12 @@ private fun QuickAssignHint(
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Text(
-                text = "Bấm phím để tạo nút Tap ở đây",
+                text = "Bấm phím/nút chuột để tạo nút Tap ở đây",
                 fontWeight = FontWeight.Bold,
                 fontSize = 14.sp,
             )
             Text(
-                text = if (waiting) "Đang chờ bấm phím…" else "Chạm khoảng trống lần nữa để hủy.",
+                text = if (waiting) "Đang chờ bấm phím/chuột…" else "Chạm khoảng trống lần nữa để hủy.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

@@ -17,20 +17,24 @@ data class AutoTapSpec(val x: Float, val y: Float, val intervalMs: Long)
  * Bố cục ánh xạ: mọi tọa độ viết theo TỈ LỆ màn hình ngang (0.0..1.0),
  * nhân với kích thước thật lúc dùng. GĐ4 dùng bộ mặc định; GĐ5 build
  * từ profile (Profile.toLayout) theo đúng struct này.
+ *
+ * Build-12: 1 phím/nút gán được cho NHIỀU phần tử — các bảng là map mã
+ * -> DANH SÁCH (không còn 1 mã = 1 phần tử). Bấm 1 phím thì TẤT CẢ
+ * phần tử gán phím đó cùng kích hoạt (xem TouchMapper.onButton).
  */
 data class TouchLayout(
     val joyX: Float, val joyY: Float, val joyR: Float, // tâm + bán kính joystick (bán kính theo chiều rộng)
     val camX: Float, val camY: Float, val camHW: Float, val camHH: Float, // tâm + BÁN KÍNH vùng camera tròn (camHH giữ lại cho tương thích, logic tròn chỉ dùng camHW)
     val sensX: Float, val sensY: Float, // độ nhạy chuột (pixel trên màn hình / 1 đơn vị chuột)
-    val buttons: Map<Int, Pair<Float, Float>>, // mã Linux -> điểm chạm (tỉ lệ)
-    val swipes: Map<Int, SwipeSpec> = emptyMap(), // mã Linux -> vuốt (tỉ lệ)
+    val buttons: Map<Int, List<Pair<Float, Float>>>, // mã Linux -> các điểm chạm (tỉ lệ)
+    val swipes: Map<Int, List<SwipeSpec>> = emptyMap(), // mã Linux -> các vuốt (tỉ lệ)
     val mapToggleKey: Int = LinuxKey.F8,
     val cursorToggleKey: Int = LinuxKey.F9, // phím chuyển con trỏ <-> nhìn tự do
     // Build-9:
-    val autoTaps: Map<Int, AutoTapSpec> = emptyMap(), // mã Linux -> tự động tap lặp
-    val releaseTaps: Map<Int, Pair<Float, Float>> = emptyMap(), // mã Linux -> tap khi NHẢ phím
+    val autoTaps: Map<Int, List<AutoTapSpec>> = emptyMap(), // mã Linux -> các tự động tap lặp
+    val releaseTaps: Map<Int, List<Pair<Float, Float>>> = emptyMap(), // mã Linux -> các tap khi NHẢ phím
     val freeLookKeys: Set<Int> = emptySet(), // phím đổi chế độ con trỏ <-> nhìn tự do (như F9)
-    val macros: Map<Int, List<MacroStep>> = emptyMap(), // mã Linux -> chuỗi bước macro
+    val macros: Map<Int, List<List<MacroStep>>> = emptyMap(), // mã Linux -> các chuỗi bước macro
     val dampX: Int = Config.DAMP_DEFAULT, // đầm tâm X (mức 1..100, EMA alpha = 1/mức đầm; xem Config.dampAlpha)
     val dampY: Int = Config.DAMP_DEFAULT, // đầm tâm Y
     val cursorSpeed: Float = Config.CURSOR_SPEED_DEFAULT, // tốc độ con trỏ ảo (chế độ con trỏ)
@@ -47,7 +51,7 @@ data class TouchLayout(
             camX = Config.CAM_CENTER_X, camY = Config.CAM_CENTER_Y,
             camHW = Config.CAM_HALF_W, camHH = Config.CAM_HALF_H,
             sensX = Config.SENS_X, sensY = Config.SENS_Y,
-            buttons = Config.DEFAULT_BUTTONS,
+            buttons = Config.DEFAULT_BUTTONS.mapValues { listOf(it.value) },
             mapToggleKey = Config.MAP_TOGGLE_KEY,
             cursorToggleKey = Config.CURSOR_TOGGLE_KEY,
         )
@@ -75,6 +79,13 @@ data class TouchLayout(
  *   phím), macros (1 phím chạy chuỗi tap/chờ/vuốt qua MacroPlayer).
  *   Đầm tâm: delta chuột REL được làm mượt bằng EMA theo từng trục
  *   (alpha = 1/mức đầm; mức 1 = không làm mượt) trước khi dùng.
+ * - Build-12: 1 phím/nút gán được cho NHIỀU phần tử (cùng loại hay khác
+ *   loại) — bấm phím thì TẤT CẢ cùng kích hoạt, mỗi phần tử 1 ngón riêng
+ *   (hết ngón thì phần tử còn lại bị bỏ). Lăn chuột (WHEEL_UP/DOWN) cũng
+ *   gán được như phím: lăn thì tap/vuốt/macro chạy (auto-tap/thả tap
+ *   không nhận lăn vì cần nhấn/nhả). Ở chế độ con trỏ, chuột trái/phải
+ *   ĐÃ GÁN cho phần tử thì kích hoạt phần tử (ưu tiên hơn bấm tại con
+ *   trỏ); chưa gán thì bấm tại con trỏ như cũ.
  *
  * Sự kiện lặp phím (EV_KEY value=2) đã bị lọc ở FrameAssembler nên không
  * tới được đây — nhấn giữ phím không tạo vuốt/nút mới.
@@ -89,7 +100,8 @@ class TouchMapper(
     private var camX = 0f
     private var camY = 0f
     private var lastMouseMs = 0L
-    private val buttonIds = mutableMapOf<Int, Int>() // mã phím/nút -> id ngón
+    // Build-12: 1 phím gán nhiều nút -> 1 mã giữ NHIỀU id ngón (1 ngón/điểm).
+    private val buttonIds = mutableMapOf<Int, MutableList<Int>>() // mã phím/nút -> các id ngón
 
     /**
      * Chế độ con trỏ (true) hay nhìn tự do bằng camera (false). MẶC ĐỊNH
@@ -120,12 +132,22 @@ class TouchMapper(
     /** Mã nút chuột đang giữ để bấm tại con trỏ (null = không bấm). */
     private var cursorTapCode: Int? = null
 
-    /** Vuốt đang chạy: mã phím -> (id ngón, lúc bắt đầu, thông số vuốt). */
-    private data class ActiveSwipe(val pointerId: Int, val startMs: Long, val spec: SwipeSpec)
-    private val activeSwipes = mutableMapOf<Int, ActiveSwipe>()
+    /**
+     * Vuốt đang chạy, khóa theo id lần chạy (runId) — build-12: 1 phím gán
+     * nhiều vuốt nên không khóa theo mã phím được nữa. Mỗi lần bấm phím
+     * tạo 1 runId mới cho mỗi vuốt.
+     */
+    private data class ActiveSwipe(
+        val code: Int,
+        val pointerId: Int,
+        val startMs: Long,
+        val spec: SwipeSpec,
+    )
+    private val activeSwipes = mutableMapOf<Long, ActiveSwipe>()
+    private var nextSwipeRunId = 0L
 
     /** Vuốt đã tới điểm cuối ở tick trước: tick này mới UP (điểm cuối đã được tiêm bằng MOVE). */
-    private val pendingRelease = mutableSetOf<Int>()
+    private val pendingRelease = mutableSetOf<Long>() // runId
 
     /** Lần chạm lại camera đang chờ sau khi UP ở rìa: (x, y, thời điểm sớm
      *  nhất được DOWN lại). UP và DOWN cách nhau ít nhất 1 tick (không cùng
@@ -139,9 +161,9 @@ class TouchMapper(
     private var smoothDx = 0f
     private var smoothDy = 0f
 
-    /** Tự động tap đang giữ: mã phím -> (thông số, lúc tap gần nhất). */
-    private data class ActiveAutoTap(val spec: AutoTapSpec, var lastTapMs: Long)
-    private val activeAutoTaps = mutableMapOf<Int, ActiveAutoTap>()
+    /** Tự động tap đang giữ (build-12: danh sách — 1 phím gán nhiều auto-tap). */
+    private data class ActiveAutoTap(val code: Int, val spec: AutoTapSpec, var lastTapMs: Long)
+    private val activeAutoTaps = mutableListOf<ActiveAutoTap>()
 
     /** Tap đã DOWN, đang chờ UP: (id ngón, thời điểm nhả). Dùng chung cho auto-tap + thả tap. */
     private data class PendingTapUp(val pointerId: Int, val upMs: Long)
@@ -175,7 +197,8 @@ class TouchMapper(
             }
             is InputEvent.Button -> onButton(e.code, e.pressed, nowMs)
             is InputEvent.MouseMove -> onMouseMove(e.dx, e.dy, nowMs)
-            else -> emptyList() // Wheel/Device: GĐ4 chưa dùng
+            is InputEvent.Wheel -> onWheel(e.vertical, nowMs) // build-12: lăn gán được như phím
+            else -> emptyList() // Device: GĐ4 chưa dùng
         }
     }
 
@@ -219,7 +242,7 @@ class TouchMapper(
             }
         }
         // Build-9: auto-tap lặp — giữ phím thì tap lại mỗi intervalMs.
-        for ((_, active) in activeAutoTaps) {
+        for (active in activeAutoTaps) {
             if (nowMs - active.lastTapMs >= active.spec.intervalMs) {
                 active.lastTapMs = nowMs
                 val id = allocPointerId() ?: continue // hết ngón: bỏ lần tap này
@@ -235,20 +258,20 @@ class TouchMapper(
         // Vuốt đã tới điểm cuối ở tick trước: nhả ngay ở tick này.
         val it = pendingRelease.iterator()
         while (it.hasNext()) {
-            val code = it.next()
+            val runId = it.next()
             it.remove()
-            val active = activeSwipes.remove(code) ?: continue
+            val active = activeSwipes.remove(runId) ?: continue
             engine.release(active.pointerId, nowMs)?.let { out.add(it) }
         }
         val canInterp = nowMs - lastInterpMs >= Config.MOVE_MIN_INTERVAL_MS
         if (canInterp) lastInterpMs = nowMs
-        for ((code, active) in activeSwipes) {
+        for ((runId, active) in activeSwipes) {
             val dur = active.spec.durationMs.coerceAtLeast(1L)
             val elapsed = nowMs - active.startMs
             if (elapsed >= dur) {
                 // Tới điểm cuối: đặt đúng điểm cuối, chờ 1 tick rồi mới UP.
                 engine.setPosition(active.pointerId, active.spec.x2 * displayW, active.spec.y2 * displayH)
-                pendingRelease.add(code)
+                pendingRelease.add(runId)
             } else if (canInterp) {
                 val f = (elapsed.toFloat() / dur).coerceIn(0f, 1f)
                 val x = (active.spec.x1 + (active.spec.x2 - active.spec.x1) * f) * displayW
@@ -296,8 +319,8 @@ class TouchMapper(
         cursorTapCode = null
         val out = ArrayList<TouchEngine.MotionEventSpec>()
         engine.release(TouchEngine.POINTER_CAMERA, nowMs)?.let { out.add(it) }
-        for ((_, id) in buttonIds) {
-            engine.release(id, nowMs)?.let { out.add(it) }
+        for (ids in buttonIds.values) {
+            for (id in ids) engine.release(id, nowMs)?.let { out.add(it) }
         }
         buttonIds.clear()
         for ((_, active) in activeSwipes) {
@@ -470,68 +493,127 @@ class TouchMapper(
         return out
     }
 
+    /**
+     * Mã phím/nút có gán cho phần tử nào không (build-12: dùng để ưu tiên
+     * phần tử hơn thao tác con trỏ ở chế độ con trỏ).
+     */
+    private fun isBound(code: Int): Boolean =
+        layout.buttons.containsKey(code) || layout.swipes.containsKey(code) ||
+            layout.autoTaps.containsKey(code) || layout.releaseTaps.containsKey(code) ||
+            layout.macros.containsKey(code)
+
+    /**
+     * Bấm/nhả phím/nút. Build-12: 1 mã gán được cho NHIỀU phần tử (cùng
+     * loại hay khác loại) — kích hoạt TẤT CẢ (không return sớm sau loại
+     * đầu tiên như trước). Ở chế độ con trỏ, chuột trái/phải ĐÃ GÁN thì
+     * kích hoạt phần tử (ưu tiên hơn bấm tại con trỏ); chưa gán thì bấm
+     * tại con trỏ như cũ.
+     */
     private fun onButton(code: Int, pressed: Boolean, nowMs: Long): List<TouchEngine.MotionEventSpec> {
-        // Chế độ con trỏ: chuột trái/phải bấm TẠI vị trí con trỏ (để bấm
-        // giao diện game), không dùng điểm chạm đã gán trong bảng.
-        if (cursorMode && (code == LinuxKey.BTN_LEFT || code == LinuxKey.BTN_RIGHT)) {
+        // Chế độ con trỏ: chuột trái/phải CHƯA GÁN thì bấm TẠI vị trí con
+        // trỏ (để bấm giao diện game); ĐÃ GÁN thì kích hoạt phần tử.
+        if (cursorMode && (code == LinuxKey.BTN_LEFT || code == LinuxKey.BTN_RIGHT) &&
+            !isBound(code)
+        ) {
             return onCursorTap(code, pressed, nowMs)
         }
-        // Phím gán vuốt thì chạy vuốt, không chạm điểm cố định.
-        val swipe = layout.swipes[code]
-        if (swipe != null) return onSwipe(code, swipe, pressed, nowMs)
-        // Build-9: tự động tap / thả tap / macro (kiểm tra trước nút thường).
-        val autoTap = layout.autoTaps[code]
-        if (autoTap != null) return onAutoTap(code, autoTap, pressed, nowMs)
-        val releaseTap = layout.releaseTaps[code]
-        if (releaseTap != null) return onReleaseTap(code, releaseTap, pressed, nowMs)
-        val macro = layout.macros[code]
-        if (macro != null) return onMacro(code, macro, pressed, nowMs)
         val out = ArrayList<TouchEngine.MotionEventSpec>()
-        val point = layout.buttons[code] ?: return out
-        if (pressed) {
-            if (buttonIds.containsKey(code)) return out
-            val id = allocPointerId() ?: return out // hết ngón
-            buttonIds[code] = id
-            engine.press(id, point.first * displayW, point.second * displayH, nowMs)
-                ?.let { out.add(it) }
-        } else {
-            val id = buttonIds.remove(code) ?: return out
-            engine.release(id, nowMs)?.let { out.add(it) }
-        }
+        layout.swipes[code]?.let { out.addAll(onSwipe(code, it, pressed, nowMs)) }
+        layout.autoTaps[code]?.let { out.addAll(onAutoTap(code, it, pressed, nowMs)) }
+        layout.releaseTaps[code]?.let { out.addAll(onReleaseTap(code, it, pressed, nowMs)) }
+        layout.macros[code]?.let { out.addAll(onMacro(code, it, pressed, nowMs)) }
+        layout.buttons[code]?.let { out.addAll(onTapButton(code, it, pressed, nowMs)) }
         return out
     }
 
-    /**
-     * Tự động Tap: bấm phím thì tap ngay 1 cái, giữ phím thì tick() tap lặp
-     * mỗi intervalMs; nhả phím thì dừng (tap đang giữ vẫn nhả đúng hẹn).
-     */
-    private fun onAutoTap(
+    /** Nút thường (BUTTON): bấm thì đè 1 ngón ở mỗi điểm gán; nhả thì nhả tất cả. */
+    private fun onTapButton(
         code: Int,
-        spec: AutoTapSpec,
+        points: List<Pair<Float, Float>>,
         pressed: Boolean,
         nowMs: Long,
     ): List<TouchEngine.MotionEventSpec> {
         val out = ArrayList<TouchEngine.MotionEventSpec>()
         if (pressed) {
-            if (activeAutoTaps.containsKey(code)) return out
-            activeAutoTaps[code] = ActiveAutoTap(spec, nowMs)
-            val id = allocPointerId() ?: return out // hết ngón: giữ phím vẫn ghi nhận, lần tap sau thử lại
-            engine.press(id, spec.x * displayW, spec.y * displayH, nowMs)
-                ?.let { out.add(it) }
-            pendingTapUps.add(PendingTapUp(id, nowMs + Config.AUTO_TAP_HOLD_MS))
+            if (buttonIds.containsKey(code)) return out
+            val ids = ArrayList<Int>()
+            for (point in points) {
+                val id = allocPointerId() ?: break // hết ngón: phần tử còn lại bị bỏ
+                ids.add(id)
+                engine.press(id, point.first * displayW, point.second * displayH, nowMs)
+                    ?.let { out.add(it) }
+            }
+            if (ids.isNotEmpty()) buttonIds[code] = ids
         } else {
-            activeAutoTaps.remove(code)
+            val ids = buttonIds.remove(code) ?: return out
+            for (id in ids) engine.release(id, nowMs)?.let { out.add(it) }
+        }
+        return out
+    }
+
+    /**
+     * Lăn chuột (build-12): lăn 1 nấc = 1 lần kích hoạt cho mọi phần tử
+     * gán mã WHEEL_UP (lăn lên) / WHEEL_DOWN (lăn xuống). Nút thường thì
+     * tap 1 cái (giữ 40ms); vuốt thì chạy trọn 1 vuốt; macro thì chạy
+     * trọn chuỗi (lăn lại thì chạy lại từ đầu). Auto-tap/thả tap KHÔNG
+     * nhận lăn vì cần nhấn/nhả. Lăn ngang (chỉ có horizontal) bị bỏ qua.
+     * Không kiểm tra mouseEnabled — lăn gán phần tử xử lý như nút (nút
+     * vẫn tiêm khi chuột tắt; chỉ di chuyển chuột mới bị chặn).
+     */
+    private fun onWheel(vertical: Int, nowMs: Long): List<TouchEngine.MotionEventSpec> {
+        val code = when {
+            vertical > 0 -> LinuxKey.WHEEL_UP
+            vertical < 0 -> LinuxKey.WHEEL_DOWN
+            else -> return emptyList()
+        }
+        val out = ArrayList<TouchEngine.MotionEventSpec>()
+        layout.buttons[code]?.let { points ->
+            for (point in points) {
+                val id = allocPointerId() ?: break // hết ngón: phần tử còn lại bị bỏ
+                engine.press(id, point.first * displayW, point.second * displayH, nowMs)
+                    ?.let { out.add(it) }
+                pendingTapUps.add(PendingTapUp(id, nowMs + Config.AUTO_TAP_HOLD_MS))
+            }
+        }
+        layout.swipes[code]?.let { out.addAll(onSwipe(code, it, true, nowMs)) }
+        layout.macros[code]?.let { out.addAll(macroPlayer.startAll(code, it, nowMs)) }
+        return out
+    }
+
+    /**
+     * Tự động Tap: bấm phím thì tap ngay 1 cái ở MỖI điểm, giữ phím thì
+     * tick() tap lặp mỗi intervalMs; nhả phím thì dừng (tap đang giữ vẫn
+     * nhả đúng hẹn).
+     */
+    private fun onAutoTap(
+        code: Int,
+        specs: List<AutoTapSpec>,
+        pressed: Boolean,
+        nowMs: Long,
+    ): List<TouchEngine.MotionEventSpec> {
+        val out = ArrayList<TouchEngine.MotionEventSpec>()
+        if (pressed) {
+            if (activeAutoTaps.any { it.code == code }) return out
+            for (spec in specs) {
+                activeAutoTaps.add(ActiveAutoTap(code, spec, nowMs))
+                val id = allocPointerId() ?: continue // hết ngón: giữ phím vẫn ghi nhận, lần tap sau thử lại
+                engine.press(id, spec.x * displayW, spec.y * displayH, nowMs)
+                    ?.let { out.add(it) }
+                pendingTapUps.add(PendingTapUp(id, nowMs + Config.AUTO_TAP_HOLD_MS))
+            }
+        } else {
+            activeAutoTaps.removeAll { it.code == code }
         }
         return out
     }
 
     /**
      * Thả Tap: bấm phím chỉ "nạp" (không làm gì), nhả phím thì tap 1 cái
-     * tại vị trí đó. Nhả mà trước đó không bấm thì không tap.
+     * tại MỖI vị trí. Nhả mà trước đó không bấm thì không tap.
      */
     private fun onReleaseTap(
         code: Int,
-        point: Pair<Float, Float>,
+        points: List<Pair<Float, Float>>,
         pressed: Boolean,
         nowMs: Long,
     ): List<TouchEngine.MotionEventSpec> {
@@ -541,21 +623,23 @@ class TouchMapper(
             return out
         }
         if (!releaseTapArmed.remove(code)) return out
-        val id = allocPointerId() ?: return out // hết ngón: bỏ lần tap này
-        engine.press(id, point.first * displayW, point.second * displayH, nowMs)
-            ?.let { out.add(it) }
-        pendingTapUps.add(PendingTapUp(id, nowMs + Config.AUTO_TAP_HOLD_MS))
+        for (point in points) {
+            val id = allocPointerId() ?: break // hết ngón: bỏ lần tap này
+            engine.press(id, point.first * displayW, point.second * displayH, nowMs)
+                ?.let { out.add(it) }
+            pendingTapUps.add(PendingTapUp(id, nowMs + Config.AUTO_TAP_HOLD_MS))
+        }
         return out
     }
 
-    /** Macro: bấm phím thì chạy chuỗi bước (bấm lại thì chạy lại từ đầu); nhả phím thì hủy. */
+    /** Macro: bấm phím thì chạy TẤT CẢ chuỗi gán phím đó (bấm lại thì chạy lại từ đầu); nhả phím thì hủy. */
     private fun onMacro(
         code: Int,
-        steps: List<MacroStep>,
+        stepLists: List<List<MacroStep>>,
         pressed: Boolean,
         nowMs: Long,
     ): List<TouchEngine.MotionEventSpec> {
-        return if (pressed) macroPlayer.start(code, steps, nowMs)
+        return if (pressed) macroPlayer.startAll(code, stepLists, nowMs)
         else macroPlayer.cancel(code, nowMs)
     }
 
@@ -581,25 +665,34 @@ class TouchMapper(
 
     /**
      * Bấm phím vuốt: DOWN ở điểm đầu rồi tick() trượt dần tới điểm cuối.
-     * Nhả phím sớm thì hủy vuốt ngay (UP ở vị trí hiện tại).
+     * Nhả phím sớm thì hủy vuốt ngay (UP ở vị trí hiện tại). Build-12:
+     * 1 phím gán nhiều vuốt thì chạy tất cả cùng lúc, mỗi vuốt 1 runId.
      */
     private fun onSwipe(
         code: Int,
-        spec: SwipeSpec,
+        specs: List<SwipeSpec>,
         pressed: Boolean,
         nowMs: Long,
     ): List<TouchEngine.MotionEventSpec> {
         val out = ArrayList<TouchEngine.MotionEventSpec>()
         if (pressed) {
-            if (activeSwipes.containsKey(code)) return out
-            val id = allocPointerId() ?: return out // hết ngón
-            activeSwipes[code] = ActiveSwipe(id, nowMs, spec)
-            engine.press(id, spec.x1 * displayW, spec.y1 * displayH, nowMs)
-                ?.let { out.add(it) }
+            if (activeSwipes.values.any { it.code == code }) return out
+            for (spec in specs) {
+                val id = allocPointerId() ?: break // hết ngón: vuốt còn lại bị bỏ
+                val runId = nextSwipeRunId++
+                activeSwipes[runId] = ActiveSwipe(code, id, nowMs, spec)
+                engine.press(id, spec.x1 * displayW, spec.y1 * displayH, nowMs)
+                    ?.let { out.add(it) }
+            }
         } else {
-            val active = activeSwipes.remove(code) ?: return out
-            pendingRelease.remove(code)
-            engine.release(active.pointerId, nowMs)?.let { out.add(it) }
+            // Nhả phím: hủy mọi vuốt đang chạy của phím này.
+            val runIds = activeSwipes.filter { it.value.code == code }.keys.toList()
+            if (runIds.isEmpty()) return out
+            for (runId in runIds) {
+                val active = activeSwipes.remove(runId) ?: continue
+                pendingRelease.remove(runId)
+                engine.release(active.pointerId, nowMs)?.let { out.add(it) }
+            }
         }
         return out
     }

@@ -106,12 +106,12 @@ class TouchProtocolTest {
             injectOk = true,
         )
         assertEquals(
-            "MAP map=1 display=2560x1600 pointers=2 latencyMs=4 injectErr=0 injectOk=1 injector=reflect mode=camera cursor=0.50,0.50 overlay=0 mouse=1 grab=none",
+            "MAP map=1 display=2560x1600 pointers=2 latencyMs=4 injectErr=0 injectOk=1 injector=reflect mode=camera cursor=0.50,0.50 overlay=0 mouse=1 grab=none grabbed=0 failed=0 devices=0",
             s,
         )
         val s2 = TouchProtocol.formatMapStatus(false, null, 0, 0, 3, false)
         assertEquals(
-            "MAP map=0 display=none pointers=0 latencyMs=0 injectErr=3 injectOk=0 injector=reflect mode=camera cursor=0.50,0.50 overlay=0 mouse=1 grab=none",
+            "MAP map=0 display=none pointers=0 latencyMs=0 injectErr=3 injectOk=0 injector=reflect mode=camera cursor=0.50,0.50 overlay=0 mouse=1 grab=none grabbed=0 failed=0 devices=0",
             s2,
         )
         assertTrue(s2.contains("display=none"))
@@ -148,9 +148,11 @@ class TouchProtocolTest {
         assertTrue(s.contains("injector=evdev"))
         assertTrue(s.contains("cursor=0.50,0.50"))
         // Build-9: có overlay=0 (lớp phủ không bị ẩn); build-11: cuối dòng
-        // thêm mouse=1 grab=none.
+        // thêm mouse=1 grab=none; build-12: cuối dòng thêm số liệu grab
+        // thật (grabbed/failed/devices).
         assertTrue(s.contains("overlay=0"))
-        assertTrue(s.endsWith("grab=none"))
+        assertTrue(s.contains("grab=none"))
+        assertTrue(s.endsWith("grabbed=0 failed=0 devices=0"))
     }
 
     @Test
@@ -165,7 +167,27 @@ class TouchProtocolTest {
             overlayHidden = true,
         )
         assertTrue(s.contains("overlay=1"))
-        assertTrue(s.endsWith("grab=none"))
+        assertTrue(s.contains("grab=none"))
+        assertTrue(s.endsWith("grabbed=0 failed=0 devices=0"))
+    }
+
+    @Test
+    fun formatMapStatus_grabStats() {
+        // Build-12: số liệu grab thật (chẩn đoán lỗi grab trên máy thật).
+        val s = TouchProtocol.formatMapStatus(
+            mapOn = true,
+            display = null,
+            pointers = 0,
+            latencyMs = 0,
+            injectErr = 0,
+            injectOk = true,
+            grabMethod = "lc-mut",
+            grabbed = 2,
+            grabFailed = 1,
+            devices = 3,
+        )
+        assertTrue(s.contains("grab=lc-mut"))
+        assertTrue(s.endsWith("grabbed=2 failed=1 devices=3"))
     }
 
     @Test
@@ -237,7 +259,8 @@ class TouchProtocolTest {
             grabMethod = "lc-mut",
         )
         assertTrue(s.contains("mouse=0"))
-        assertTrue(s.endsWith("grab=lc-mut"))
+        assertTrue(s.contains("grab=lc-mut"))
+        assertTrue(s.endsWith("grabbed=0 failed=0 devices=0"))
     }
 
     @Test

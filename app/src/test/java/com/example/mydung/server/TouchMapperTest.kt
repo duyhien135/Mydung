@@ -12,8 +12,8 @@ class TouchMapperTest {
         camX = 0.5f, camY = 0.5f, camHW = 0.2f, camHH = 0.4f, // tâm (500, 250), vùng TRÒN bán kính 200px (camHH không dùng trong logic tròn)
         sensX = 1f, sensY = 1f,
         buttons = mapOf(
-            LinuxKey.SPACE to (0.9f to 0.5f), // (900, 250)
-            LinuxKey.BTN_LEFT to (0.8f to 0.8f), // (800, 400)
+            LinuxKey.SPACE to listOf(0.9f to 0.5f), // (900, 250)
+            LinuxKey.BTN_LEFT to listOf(0.8f to 0.8f), // (800, 400)
         ),
     )
 
@@ -153,7 +153,7 @@ class TouchMapperTest {
     @Test
     fun buttons_twoAtOnceAndReleaseOrder() {
         val (_, m) = mapper()
-        m.setCursorMode(false, 0) // mặc định là con trỏ — ở đó BTN_LEFT bấm tại con trỏ, không phải điểm gán
+        m.setCursorMode(false, 0) // nhìn tự do (ở chế độ con trỏ BTN_LEFT đã gán vẫn bấm điểm gán — xem test cursorMode_boundLeftClickActivatesElement)
         val d1 = m.process(key(LinuxKey.SPACE, true, 100), 100)
         assertEquals(TouchEngine.ACTION_DOWN, d1.single().action)
         val d2 = m.process(btn(LinuxKey.BTN_LEFT, true, 110), 110)
@@ -182,7 +182,7 @@ class TouchMapperTest {
     @Test
     fun joystickAndCameraAndButton_simultaneous() {
         val (engine, m) = mapper()
-        m.setCursorMode(false, 0) // mặc định là con trỏ — test này cần camera + BTN_LEFT ở điểm gán
+        m.setCursorMode(false, 0) // test này cần ngón camera (chế độ con trỏ không có ngón camera)
         m.process(key(LinuxKey.W, true, 100), 100) // joystick
         m.process(move(5, 0, 110), 110) // camera
         m.process(btn(LinuxKey.BTN_LEFT, true, 120), 120) // bắn
@@ -202,7 +202,7 @@ class TouchMapperTest {
         val swipeLayout = layout.copy(
             swipes = mapOf(
                 // Q: vuốt ngang (300, 250) -> (700, 250) trong 400ms.
-                LinuxKey.Q to SwipeSpec(0.3f, 0.5f, 0.7f, 0.5f, 400L),
+                LinuxKey.Q to listOf(SwipeSpec(0.3f, 0.5f, 0.7f, 0.5f, 400L)),
             ),
         )
         return engine to TouchMapper(engine, swipeLayout, 1000, 500)
@@ -316,7 +316,14 @@ class TouchMapperTest {
 
     @Test
     fun cursorMode_leftClickTapsAtCursorAndDragFollows() {
-        val (engine, m) = mapper()
+        // Build-12: chuột trái/phải ĐÃ GÁN thì kích hoạt phần tử (không bấm
+        // tại con trỏ nữa) — test này dùng layout KHÔNG gán BTN_LEFT.
+        val engine = TouchPointerSet()
+        val m = TouchMapper(
+            engine,
+            layout.copy(buttons = mapOf(LinuxKey.SPACE to listOf(0.9f to 0.5f))),
+            1000, 500,
+        )
         m.setCursorMode(true, 100)
         m.process(move(10, 0, 110), 110) // con trỏ ở (510, 250)
         val down = m.process(btn(LinuxKey.BTN_LEFT, true, 120), 120)
@@ -486,7 +493,7 @@ class TouchMapperTest {
         val engine = TouchPointerSet()
         val l = layout.copy(
             autoTaps = mapOf(
-                LinuxKey.Q to AutoTapSpec(0.5f, 0.5f, 100L), // (500, 250) mỗi 100ms
+                LinuxKey.Q to listOf(AutoTapSpec(0.5f, 0.5f, 100L)), // (500, 250) mỗi 100ms
             ),
         )
         return engine to TouchMapper(engine, l, 1000, 500)
@@ -519,7 +526,7 @@ class TouchMapperTest {
 
     private fun releaseTapMapper(): Pair<TouchPointerSet, TouchMapper> {
         val engine = TouchPointerSet()
-        val l = layout.copy(releaseTaps = mapOf(LinuxKey.Q to (0.5f to 0.5f)))
+        val l = layout.copy(releaseTaps = mapOf(LinuxKey.Q to listOf(0.5f to 0.5f)))
         return engine to TouchMapper(engine, l, 1000, 500)
     }
 
@@ -548,9 +555,11 @@ class TouchMapperTest {
         val l = layout.copy(
             macros = mapOf(
                 LinuxKey.Q to listOf(
-                    MacroStep(MacroStepKind.TAP, 0.5f, 0.5f),
-                    MacroStep(MacroStepKind.WAIT, ms = 100L),
-                    MacroStep(MacroStepKind.TAP, 0.8f, 0.8f),
+                    listOf(
+                        MacroStep(MacroStepKind.TAP, 0.5f, 0.5f),
+                        MacroStep(MacroStepKind.WAIT, ms = 100L),
+                        MacroStep(MacroStepKind.TAP, 0.8f, 0.8f),
+                    ),
                 ),
             ),
         )
@@ -651,5 +660,164 @@ class TouchMapperTest {
         m.process(move(10, 0, 120), 120)
         assertEquals(0.51f, m.cursorRatio().first, 0.001f)
         assertEquals(1, engine.count)
+    }
+
+    // ── Build-12: 1 phím gán nhiều phần tử + gán bằng chuột/lăn ──
+
+    @Test
+    fun multiBinding_sameKeyTwoButtons_pressAndReleaseBoth() {
+        val engine = TouchPointerSet()
+        val l = layout.copy(
+            buttons = mapOf(
+                LinuxKey.SPACE to listOf(0.9f to 0.5f, 0.8f to 0.8f),
+            ),
+        )
+        val m = TouchMapper(engine, l, 1000, 500)
+        // Bấm SPACE: 2 ngón đè cùng lúc ở 2 điểm.
+        val down = m.process(key(LinuxKey.SPACE, true, 100), 100)
+        assertEquals(2, down.size)
+        assertEquals(TouchEngine.ACTION_DOWN, down[0].action)
+        assertPoint(down[0], 2, 900f, 250f)
+        assertPoint(down[1], 3, 800f, 400f)
+        assertEquals(2, engine.count)
+        // Nhả: cả 2 ngón cùng nhả, không kẹt ngón nào.
+        val up = m.process(key(LinuxKey.SPACE, false, 200), 200)
+        assertEquals(2, up.size)
+        assertEquals(0, engine.count)
+    }
+
+    @Test
+    fun multiBinding_sameKeyButtonAndMacro_bothFire() {
+        val engine = TouchPointerSet()
+        val l = layout.copy(
+            buttons = mapOf(LinuxKey.Q to listOf(0.5f to 0.5f)),
+            macros = mapOf(
+                LinuxKey.Q to listOf(
+                    listOf(MacroStep(MacroStepKind.TAP, 0.8f, 0.8f)),
+                ),
+            ),
+        )
+        val m = TouchMapper(engine, l, 1000, 500)
+        // Bấm Q: nút tap (500, 250) + macro tap (800, 400) cùng chạy.
+        val specs = m.process(key(LinuxKey.Q, true, 100), 100)
+        assertEquals(2, specs.size)
+        assertEquals(2, engine.count)
+        val allPoints = specs.flatMap { it.pointers }.map { it.id to (it.x to it.y) }.toMap()
+        assertEquals(500f, allPoints[3]?.first ?: Float.NaN, 0.01f)
+        assertEquals(800f, allPoints[2]?.first ?: Float.NaN, 0.01f)
+        // Nhả Q: nút nhả + macro hủy.
+        val ups = m.process(key(LinuxKey.Q, false, 110), 110)
+        assertEquals(2, ups.size)
+        assertEquals(0, engine.count)
+    }
+
+    @Test
+    fun multiBinding_twoSwipes_sameKey_bothStart() {
+        val engine = TouchPointerSet()
+        val l = layout.copy(
+            swipes = mapOf(
+                LinuxKey.Q to listOf(
+                    SwipeSpec(0.3f, 0.5f, 0.7f, 0.5f, 400L),
+                    SwipeSpec(0.3f, 0.2f, 0.7f, 0.2f, 400L),
+                ),
+            ),
+        )
+        val m = TouchMapper(engine, l, 1000, 500)
+        val down = m.process(key(LinuxKey.Q, true, 100), 100)
+        assertEquals(2, down.size)
+        assertPoint(down[0], 2, 300f, 250f)
+        assertPoint(down[1], 3, 300f, 100f)
+        assertEquals(2, engine.count)
+        // Cả 2 vuốt chạy tới cuối rồi tự nhả (không cần nhả phím).
+        assertTrue(m.tick(500).isEmpty()) // tới điểm cuối, chờ 1 tick
+        val ups = m.tick(600)
+        assertEquals(2, ups.size)
+        assertEquals(0, engine.count)
+    }
+
+    @Test
+    fun cursorMode_boundLeftClickActivatesElement() {
+        // Build-12: chuột trái ĐÃ GÁN thì kích hoạt phần tử (ưu tiên hơn
+        // bấm tại con trỏ). Layout mặc định gán BTN_LEFT -> (800, 400).
+        val (engine, m) = mapper()
+        m.setCursorMode(true, 100)
+        m.process(move(10, 0, 110), 110) // con trỏ ở (510, 250)
+        val down = m.process(btn(LinuxKey.BTN_LEFT, true, 120), 120)
+        assertEquals(1, down.size)
+        assertEquals(TouchEngine.ACTION_DOWN, down[0].action)
+        assertPoint(down[0], 2, 800f, 400f) // điểm gán, KHÔNG phải con trỏ
+        assertTrue(!engine.isDown(TouchEngine.POINTER_CAMERA)) // không bấm tại con trỏ
+        val up = m.process(btn(LinuxKey.BTN_LEFT, false, 130), 130)
+        assertEquals(TouchEngine.ACTION_UP, up.single().action)
+        assertEquals(0, engine.count)
+    }
+
+    @Test
+    fun cursorMode_unboundRightClickTapsAtCursor() {
+        // BTN_RIGHT không gán trong layout mặc định -> bấm tại con trỏ như cũ.
+        val (engine, m) = mapper()
+        m.setCursorMode(true, 100)
+        m.process(move(10, 0, 110), 110) // con trỏ ở (510, 250)
+        val down = m.process(btn(LinuxKey.BTN_RIGHT, true, 120), 120)
+        assertEquals(1, down.size)
+        assertPoint(down[0], TouchEngine.POINTER_CAMERA, 510f, 250f)
+        val up = m.process(btn(LinuxKey.BTN_RIGHT, false, 130), 130)
+        assertEquals(TouchEngine.ACTION_UP, up.single().action)
+        assertEquals(0, engine.count)
+    }
+
+    private fun wheelMapper(): Pair<TouchPointerSet, TouchMapper> {
+        val engine = TouchPointerSet()
+        val l = layout.copy(
+            buttons = mapOf(
+                LinuxKey.WHEEL_UP to listOf(0.9f to 0.2f), // lăn lên -> (900, 100)
+            ),
+            macros = mapOf(
+                LinuxKey.WHEEL_DOWN to listOf(
+                    listOf(MacroStep(MacroStepKind.TAP, 0.1f, 0.8f)),
+                ),
+            ),
+        )
+        return engine to TouchMapper(engine, l, 1000, 500)
+    }
+
+    @Test
+    fun wheel_upTapsBoundPoint_horizontalIgnored() {
+        val (engine, m) = wheelMapper()
+        // Lăn lên: tap 1 cái ở điểm gán, giữ 40ms rồi nhả.
+        val down = m.process(InputEvent.Wheel(1, 0, 100), 100)
+        assertEquals(1, down.size)
+        assertEquals(TouchEngine.ACTION_DOWN, down[0].action)
+        assertPoint(down[0], 2, 900f, 100f)
+        val up = m.tick(140)
+        assertEquals(1, up.size)
+        assertEquals(TouchEngine.ACTION_UP, up[0].action)
+        assertEquals(0, engine.count)
+        // Lăn ngang (chỉ có horizontal): bỏ qua.
+        assertTrue(m.process(InputEvent.Wheel(0, 1, 200), 200).isEmpty())
+    }
+
+    @Test
+    fun wheel_downStartsBoundMacro() {
+        val (engine, m) = wheelMapper()
+        // Lăn xuống: chạy macro gán WHEEL_DOWN (tap (100, 400)).
+        val down = m.process(InputEvent.Wheel(-1, 0, 100), 100)
+        assertEquals(1, down.size)
+        assertPoint(down[0], 2, 100f, 400f)
+        val up = m.tick(140)
+        assertEquals(1, up.size)
+        assertEquals(TouchEngine.ACTION_UP, up[0].action)
+        assertEquals(0, engine.count)
+    }
+
+    @Test
+    fun wheel_worksWhenMouseDisabled() {
+        // Lăn gán phần tử xử lý như nút: chuột tắt thì di chuyển chuột bị
+        // chặn nhưng lăn/nút đã gán vẫn tiêm (giống nút thường).
+        val (_, m) = wheelMapper()
+        m.mouseEnabled = false
+        val down = m.process(InputEvent.Wheel(1, 0, 100), 100)
+        assertEquals(1, down.size)
+        assertPoint(down[0], 2, 900f, 100f)
     }
 }

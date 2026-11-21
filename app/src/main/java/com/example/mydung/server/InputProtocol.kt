@@ -15,10 +15,22 @@ object InputProtocol {
     /**
      * Parse dòng "EV K/B <code> <1|0> <time>" thành mã phím/nút khi NHẤN
      * (pressed=1). Dùng cho gán phím trong editor GĐ5. Dòng khác -> null.
+     * Build-12: dòng lăn chuột "EV W <v> <h> <time>" đổi thành mã nội bộ
+     * WHEEL_UP (v > 0) / WHEEL_DOWN (v < 0) để gán được như phím thường.
      */
     fun parseKeyPress(line: String): Int? {
         val parts = line.split(' ')
-        if (parts.size < 4 || parts[0] != "EV" || (parts[1] != "K" && parts[1] != "B")) return null
+        if (parts.size < 4 || parts[0] != "EV") return null
+        // Lăn chuột: không có trạng thái nhấn/nhả, chỉ có giá trị REL_WHEEL.
+        if (parts[1] == "W") {
+            val v = parts[2].toIntOrNull() ?: return null
+            return when {
+                v > 0 -> LinuxKey.WHEEL_UP
+                v < 0 -> LinuxKey.WHEEL_DOWN
+                else -> null // v = 0 (chỉ lăn ngang): bỏ qua
+            }
+        }
+        if (parts[1] != "K" && parts[1] != "B") return null
         if (parts[3] != "1") return null // chỉ lấy lúc nhấn, bỏ lúc nhả
         return parts[2].toIntOrNull()
     }

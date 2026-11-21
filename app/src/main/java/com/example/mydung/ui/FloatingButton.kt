@@ -110,6 +110,7 @@ fun FloatingButton(
     cursorSpeed: StateFlow<Float>,
     overlayToggleKey: StateFlow<Int>,
     grabMethod: StateFlow<String>,
+    grabDetail: StateFlow<String>,
     cursorDotSizeDp: StateFlow<Int>,
     captureRequest: StateFlow<Int?>,
     capturedKey: StateFlow<Pair<Int, Int>?>,
@@ -301,6 +302,7 @@ fun FloatingButton(
                         cursorSpeed = cursorSpeed,
                         overlayToggleKey = overlayToggleKey,
                         grabMethod = grabMethod,
+                        grabDetail = grabDetail,
                         cursorDotSizeDp = cursorDotSizeDp,
                         logoAlpha = logoAlpha,
                         captureRequest = captureRequest,
@@ -350,6 +352,7 @@ private fun SettingsPanel(
     cursorSpeed: StateFlow<Float>,
     overlayToggleKey: StateFlow<Int>,
     grabMethod: StateFlow<String>,
+    grabDetail: StateFlow<String>,
     cursorDotSizeDp: StateFlow<Int>,
     logoAlpha: StateFlow<Float>,
     captureRequest: StateFlow<Int?>,
@@ -366,6 +369,7 @@ private fun SettingsPanel(
     val speedValue by cursorSpeed.collectAsState()
     val overlayKeyValue by overlayToggleKey.collectAsState()
     val grabValue by grabMethod.collectAsState()
+    val grabDetailValue by grabDetail.collectAsState()
     val dotSizeValue by cursorDotSizeDp.collectAsState()
     val alphaValue by logoAlpha.collectAsState()
     val captureIndex by captureRequest.collectAsState()
@@ -504,6 +508,22 @@ private fun SettingsPanel(
                 text = if (grabValue == "none") "không được" else grabValue,
                 color = if (grabValue == "none") Color(0xFFEF9A9A) else Color(0xFF81C784),
                 fontSize = 14.sp,
+            )
+        }
+        // Build-12: số liệu grab thật + số thiết bị Server thấy (chẩn đoán).
+        // "Server không thấy thiết bị nào" = Server không đọc được event
+        // (mở fd lỗi hay bị lọc) — đó là gốc của tam giác đứng im + gán
+        // phím không ăn.
+        if (grabDetailValue.isNotBlank()) {
+            Text(
+                text = grabDetailValue,
+                color = if (grabDetailValue.startsWith("Server không thấy")) {
+                    Color(0xFFEF9A9A)
+                } else {
+                    Color.White.copy(alpha = 0.6f)
+                },
+                fontSize = 12.sp,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
             )
         }
         Text(

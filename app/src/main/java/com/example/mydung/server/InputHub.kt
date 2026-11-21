@@ -22,6 +22,21 @@ object InputHub {
     var grabKeyboard = false
         private set
 
+    /**
+     * Số thiết bị grab LỖI ở lần setGrab(on=true) gần nhất — chẩn đoán
+     * build-12: strategy grab=lc-mut chỉ nói cách ioctl dò được, không
+     * nói grab có thành công không; số này + grabbedCount() mới nói được.
+     */
+    @Volatile
+    var lastGrabFailed = 0
+        private set
+
+    /** Số thiết bị Server đang mở được (đọc event) — 0 = Server không thấy gì. */
+    fun deviceCount(): Int = scanner.devices().size
+
+    /** Số thiết bị đang bị GRAB thật (grab thành công, không phải chỉ strategy). */
+    fun grabbedCount(): Int = synchronized(grabbedIds) { grabbedIds.size }
+
     @Volatile
     private var lastAppActivityMs = System.currentTimeMillis()
 
@@ -129,6 +144,7 @@ object InputHub {
             }
         }
         val method = Grabber.strategyName
+        if (on) lastGrabFailed = failed
         Server.log("GRAB $target=$on: chiếm được $grabbed, lỗi $failed (cách $method).")
         return "OK GRAB mouse=${if (grabMouse) 1 else 0} keyboard=${if (grabKeyboard) 1 else 0} " +
             "method=$method grabbed=$grabbed failed=$failed"

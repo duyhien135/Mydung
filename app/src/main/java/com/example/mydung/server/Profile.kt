@@ -83,33 +83,40 @@ data class Profile(
     fun toLayout(displayW: Int, displayH: Int): TouchLayout {
         val joy = elements.firstOrNull { it.enabled && it.type == ElementType.JOYSTICK }
         val cam = elements.firstOrNull { it.enabled && it.type == ElementType.CAMERA }
-        val buttons = HashMap<Int, Pair<Float, Float>>()
-        val swipes = HashMap<Int, SwipeSpec>()
-        val autoTaps = HashMap<Int, AutoTapSpec>()
-        val releaseTaps = HashMap<Int, Pair<Float, Float>>()
+        // Build-12: 1 phím gán được cho NHIỀU phần tử — cộng dồn vào danh
+        // sách, KHÔNG ghi đè (trước đây phần tử sau ghi đè phần tử trước
+        // cùng phím nên chỉ 1 phần tử kích hoạt).
+        val buttons = HashMap<Int, MutableList<Pair<Float, Float>>>()
+        val swipes = HashMap<Int, MutableList<SwipeSpec>>()
+        val autoTaps = HashMap<Int, MutableList<AutoTapSpec>>()
+        val releaseTaps = HashMap<Int, MutableList<Pair<Float, Float>>>()
         val freeLookKeys = HashSet<Int>()
-        val macros = HashMap<Int, List<MacroStep>>()
+        val macros = HashMap<Int, MutableList<List<MacroStep>>>()
         for (e in elements) {
             if (!e.enabled || e.keyCode == null) continue
             when (e.type) {
-                ElementType.BUTTON -> buttons[e.keyCode] = e.x to e.y
-                ElementType.SWIPE -> swipes[e.keyCode] = SwipeSpec(
-                    e.x, e.y,
-                    e.x2 ?: (e.x + 0.15f).coerceIn(0f, 1f),
-                    e.y2 ?: e.y,
-                    e.durationMs.coerceIn(50L, 3000L),
-                )
-                ElementType.AUTO_TAP -> autoTaps[e.keyCode] = AutoTapSpec(
-                    e.x, e.y,
-                    e.intervalMs.coerceIn(
-                        Config.AUTO_TAP_INTERVAL_MIN_MS,
-                        Config.AUTO_TAP_INTERVAL_MAX_MS,
+                ElementType.BUTTON -> buttons.getOrPut(e.keyCode) { ArrayList() }.add(e.x to e.y)
+                ElementType.SWIPE -> swipes.getOrPut(e.keyCode) { ArrayList() }.add(
+                    SwipeSpec(
+                        e.x, e.y,
+                        e.x2 ?: (e.x + 0.15f).coerceIn(0f, 1f),
+                        e.y2 ?: e.y,
+                        e.durationMs.coerceIn(50L, 3000L),
                     ),
                 )
-                ElementType.RELEASE_TAP -> releaseTaps[e.keyCode] = e.x to e.y
+                ElementType.AUTO_TAP -> autoTaps.getOrPut(e.keyCode) { ArrayList() }.add(
+                    AutoTapSpec(
+                        e.x, e.y,
+                        e.intervalMs.coerceIn(
+                            Config.AUTO_TAP_INTERVAL_MIN_MS,
+                            Config.AUTO_TAP_INTERVAL_MAX_MS,
+                        ),
+                    ),
+                )
+                ElementType.RELEASE_TAP -> releaseTaps.getOrPut(e.keyCode) { ArrayList() }.add(e.x to e.y)
                 ElementType.FREE_LOOK -> freeLookKeys.add(e.keyCode)
                 ElementType.MACRO -> {
-                    if (e.steps.isNotEmpty()) macros[e.keyCode] = e.steps
+                    if (e.steps.isNotEmpty()) macros.getOrPut(e.keyCode) { ArrayList() }.add(e.steps)
                 }
                 else -> { /* joystick/camera không vào các bảng này */ }
             }

@@ -85,4 +85,50 @@ class MacroPlayerTest {
         assertTrue(p.tick(200).isEmpty())
         assertEquals(1, engine.count) // ngón vẫn đè — caller phải CANCEL
     }
+
+    @Test
+    fun startAll_twoMacrosSameKey_runInParallel() {
+        // Build-12: 1 phím gán 2 macro thì cả 2 cùng chạy (2 ngón riêng).
+        val (engine, p) = player()
+        val specs = p.startAll(
+            1,
+            listOf(
+                listOf(MacroStep(MacroStepKind.TAP, 0.5f, 0.5f)),
+                listOf(MacroStep(MacroStepKind.TAP, 0.8f, 0.8f)),
+            ),
+            100,
+        )
+        assertEquals(2, specs.size)
+        assertPoint(specs[0], 2, 500f, 250f)
+        assertPoint(specs[1], 3, 800f, 400f)
+        assertEquals(2, engine.count)
+        assertTrue(p.isPlaying(1))
+        // Nhả phím: hủy cả 2 macro cùng lúc.
+        val ups = p.cancel(1, 110)
+        assertEquals(2, ups.size)
+        assertEquals(0, engine.count)
+        assertFalse(p.isPlaying(1))
+    }
+
+    @Test
+    fun startAll_restartsAllMacrosOfKey() {
+        // Bấm lại phím trong lúc 2 macro đang chạy: cả 2 chạy lại từ đầu.
+        val (engine, p) = player()
+        val lists = listOf(
+            listOf(
+                MacroStep(MacroStepKind.TAP, 0.5f, 0.5f),
+                MacroStep(MacroStepKind.WAIT, ms = 500L),
+            ),
+            listOf(MacroStep(MacroStepKind.TAP, 0.8f, 0.8f)),
+        )
+        p.startAll(1, lists, 100)
+        p.tick(140) // nhả 2 tap đầu, macro 1 đang chờ 500ms
+        assertEquals(0, engine.count)
+        // Bấm lại: cả 2 macro chạy lại từ đầu (tap ngay).
+        val specs = p.startAll(1, lists, 150)
+        assertEquals(2, specs.size)
+        assertPoint(specs[0], 2, 500f, 250f)
+        assertPoint(specs[1], 3, 800f, 400f)
+        assertEquals(2, engine.count)
+    }
 }

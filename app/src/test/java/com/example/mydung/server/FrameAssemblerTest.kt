@@ -132,13 +132,22 @@ class InputProtocolTest {
     fun parseKeyPress_valid() {
         assertEquals(17, InputProtocol.parseKeyPress("EV K 17 1 100"))
         assertEquals(272, InputProtocol.parseKeyPress("EV B 272 1 100"))
+        // Build-12: nút chuột + lăn chuột gán được như phím.
+        assertEquals(273, InputProtocol.parseKeyPress("EV B 273 1 100")) // phải
+        assertEquals(274, InputProtocol.parseKeyPress("EV B 274 1 100")) // giữa
+        assertEquals(275, InputProtocol.parseKeyPress("EV B 275 1 100")) // back
+        assertEquals(276, InputProtocol.parseKeyPress("EV B 276 1 100")) // forward
+        assertEquals(LinuxKey.WHEEL_UP, InputProtocol.parseKeyPress("EV W 1 -1 100"))
+        assertEquals(LinuxKey.WHEEL_UP, InputProtocol.parseKeyPress("EV W 3 0 100"))
+        assertEquals(LinuxKey.WHEEL_DOWN, InputProtocol.parseKeyPress("EV W -1 0 100"))
     }
 
     @Test
     fun parseKeyPress_ignored() {
         assertEquals(null, InputProtocol.parseKeyPress("EV K 17 0 100")) // lúc nhả
+        assertEquals(null, InputProtocol.parseKeyPress("EV B 272 0 100")) // nút nhả
         assertEquals(null, InputProtocol.parseKeyPress("EV M 5 -3 100"))
-        assertEquals(null, InputProtocol.parseKeyPress("EV W 1 -1 100"))
+        assertEquals(null, InputProtocol.parseKeyPress("EV W 0 1 100")) // chỉ lăn ngang
         assertEquals(null, InputProtocol.parseKeyPress("EV DEV add event6 Chuột"))
         assertEquals(null, InputProtocol.parseKeyPress("EV K xx 1 100"))
         assertEquals(null, InputProtocol.parseKeyPress(""))
@@ -151,6 +160,33 @@ class InputProtocolTest {
         assertEquals(null, InputProtocol.parseGrab("GRAB touch 1"))
         assertEquals(null, InputProtocol.parseGrab("GRAB"))
         assertEquals(null, InputProtocol.parseGrab("PING"))
+    }
+}
+
+/** Tên hiển thị nút chuột + lăn chuột (build-12) — UI hiện đúng "Chuột-L", "Lăn lên"... */
+class LinuxKeyNameTest {
+
+    @Test
+    fun mouseButtons_shortNames() {
+        assertEquals("Chuột-L", LinuxKey.name(LinuxKey.BTN_LEFT))
+        assertEquals("Chuột-R", LinuxKey.name(LinuxKey.BTN_RIGHT))
+        assertEquals("Chuột-Giữa", LinuxKey.name(LinuxKey.BTN_MIDDLE))
+        assertEquals("Chuột-Back", LinuxKey.name(LinuxKey.BTN_SIDE))
+        assertEquals("Chuột-Forward", LinuxKey.name(LinuxKey.BTN_EXTRA))
+    }
+
+    @Test
+    fun wheel_names() {
+        assertEquals("Lăn lên", LinuxKey.name(LinuxKey.WHEEL_UP))
+        assertEquals("Lăn xuống", LinuxKey.name(LinuxKey.WHEEL_DOWN))
+    }
+
+    @Test
+    fun wheelCodes_outsideLinuxRange() {
+        // Mã nội bộ 1000/1001 không trùng mã input Linux (tối đa 0x2ff = 767).
+        assertTrue(LinuxKey.WHEEL_UP > 0x2ff)
+        assertTrue(LinuxKey.WHEEL_DOWN > 0x2ff)
+        assertTrue(LinuxKey.WHEEL_UP != LinuxKey.WHEEL_DOWN)
     }
 }
 

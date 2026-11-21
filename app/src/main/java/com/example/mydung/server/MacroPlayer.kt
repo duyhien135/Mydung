@@ -13,6 +13,9 @@ package com.example.mydung.server
  * Bấm phím lại trong lúc đang chạy thì chạy lại từ đầu; nhả phím thì hủy
  * ngay (nhả ngón đang đè). Hết ngón (id 2..9 bận) thì bỏ bước đó, chạy tiếp
  * bước sau — macro không bao giờ kẹt chờ ngón.
+ *
+ * Build-12: 1 phím gán được cho NHIỀU macro (gán trùng cho phép) — mỗi phím
+ * giữ 1 DANH SÁCH playback, bấm phím thì chạy tất cả cùng lúc.
  */
 class MacroPlayer(
     private val engine: TouchPointerSet,
@@ -30,29 +33,49 @@ class MacroPlayer(
         var untilMs: Long = 0L, // TAP_HOLD: lúc nhả tap; WAIT: lúc hết chờ
         var swipeStartMs: Long = 0L,
         var lastInterpMs: Long = 0L,
+        var finished: Boolean = false, // chạy hết chuỗi -> tick gỡ khỏi danh sách
     )
 
-    private val playbacks = mutableMapOf<Int, Playback>()
+    // Build-12: 1 phím -> NHIỀU playback (mỗi phần tử MACRO gán cùng phím
+    // là 1 playback riêng, chạy song song).
+    private val playbacks = mutableMapOf<Int, MutableList<Playback>>()
 
-    fun isPlaying(code: Int): Boolean = playbacks.containsKey(code)
+    fun isPlaying(code: Int): Boolean = playbacks[code]?.isNotEmpty() == true
 
     /** Bắt đầu macro cho [code] (bấm phím). Macro cũ cùng phím thì hủy rồi chạy lại từ đầu. */
-    fun start(code: Int, steps: List<MacroStep>, nowMs: Long): List<TouchEngine.MotionEventSpec> {
+    fun start(code: Int, steps: List<MacroStep>, nowMs: Long): List<TouchEngine.MotionEventSpec> =
+        startAll(code, listOf(steps), nowMs)
+
+    /**
+     * Bắt đầu TẤT CẢ macro gán cho [code] (bấm phím/lăn chuột). Hủy mọi
+     * playback cũ cùng phím rồi chạy lại từ đầu từng cái một.
+     */
+    fun startAll(code: Int, stepLists: List<List<MacroStep>>, nowMs: Long): List<TouchEngine.MotionEventSpec> {
         val out = ArrayList<TouchEngine.MotionEventSpec>()
         out.addAll(cancel(code, nowMs))
-        if (steps.isEmpty()) return out
-        playbacks[code] = Playback(code, steps)
-        out.addAll(advance(code, nowMs))
+        val nonEmpty = stepLists.filter { it.isNotEmpty() }
+        if (nonEmpty.isEmpty()) return out
+        val list = playbacks.getOrPut(code) { ArrayList() }
+        for (steps in nonEmpty) {
+            val pb = Playback(code, steps)
+            list.add(pb)
+            out.addAll(advance(pb, nowMs))
+        }
+        // Macro toàn WAIT 0ms có thể xong ngay trong lần advance đầu.
+        list.removeAll { it.finished }
+        if (list.isEmpty()) playbacks.remove(code)
         return out
     }
 
-    /** Hủy macro của [code] (nhả phím / tắt MAP): nhả ngón đang đè (nếu có). */
+    /** Hủy mọi macro của [code] (nhả phím / tắt MAP): nhả ngón đang đè (nếu có). */
     fun cancel(code: Int, nowMs: Long): List<TouchEngine.MotionEventSpec> {
         val out = ArrayList<TouchEngine.MotionEventSpec>()
-        val pb = playbacks.remove(code) ?: return out
-        val id = pb.pointerId
-        if (id != null) {
-            engine.release(id, nowMs)?.let { out.add(it) }
+        val list = playbacks.remove(code) ?: return out
+        for (pb in list) {
+            val id = pb.pointerId
+            if (id != null) {
+                engine.release(id, nowMs)?.let { out.add(it) }
+            }
         }
         return out
     }
@@ -76,7 +99,15 @@ class MacroPlayer(
     /** Tiến triển mọi macro đang chạy (TouchHub gọi mỗi vòng worker qua TouchMapper.tick). */
     fun tick(nowMs: Long): List<TouchEngine.MotionEventSpec> {
         val out = ArrayList<TouchEngine.MotionEventSpec>()
-        for (code in playbacks.keys.toList()) out.addAll(advance(code, nowMs))
+        for ((code, list) in playbacks.toMap()) {
+            val it = list.iterator()
+            while (it.hasNext()) {
+                val pb = it.next()
+                out.addAll(advance(pb, nowMs))
+                if (pb.finished) it.remove()
+            }
+            if (list.isEmpty()) playbacks.remove(code)
+        }
         return out
     }
 
@@ -86,15 +117,14 @@ class MacroPlayer(
      * sang bước sau ngay trong lần gọi này; bước SWIPE tới điểm cuối thì
      * dừng lại, lần gọi sau mới UP.
      */
-    private fun advance(code: Int, nowMs: Long): List<TouchEngine.MotionEventSpec> {
+    private fun advance(pb: Playback, nowMs: Long): List<TouchEngine.MotionEventSpec> {
         val out = ArrayList<TouchEngine.MotionEventSpec>()
-        val pb = playbacks[code] ?: return out
         var guard = 0
         while (guard++ < 100) {
             when (pb.phase) {
                 Phase.NEXT -> {
                     if (pb.index >= pb.steps.size) {
-                        playbacks.remove(code)
+                        pb.finished = true
                         return out
                     }
                     val step = pb.steps[pb.index]

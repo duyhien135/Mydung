@@ -123,10 +123,14 @@ object TouchHub {
         // Build-9: phím Xoay tự do (FREE_LOOK): bấm để đổi chế độ con trỏ
         // <-> nhìn tự do, y hệt F9. Chỉ nhận phím bàn phím (không nhận nút
         // chuột — nút chuột đã dùng cho bấm tại con trỏ / nút bắn).
+        // Build-12: KHÔNG return sau khi đổi chế độ — event đi tiếp xuống
+        // hàng đợi để các phần tử khác gán cùng phím (nút/vuốt/macro...)
+        // cùng kích hoạt (1 phím gán nhiều phần tử). Phím chỉ gán FREE_LOOK
+        // thì TouchMapper không tìm thấy gì nên không làm gì thêm; MAP tắt
+        // thì cổng `if (!mapOn)` bên dưới chặn lại.
         if (e is InputEvent.Key && e.pressed && e.code in mapper.layout.freeLookKeys) {
             val res = setCursorMode(!cursorMode)
             if (res.startsWith("ERR")) Server.log("FREELOOK: bấm ${LinuxKey.name(e.code)} nhưng $res")
-            return@Listener
         }
         if (!mapOn) return@Listener
         val item = Work.Event(e, SystemClock.uptimeMillis())
@@ -427,6 +431,11 @@ object TouchHub {
             // lỗi 2 con trỏ trên máy thật: "none" = chưa grab được).
             mouseEnabled = mapper.mouseEnabled,
             grabMethod = Grabber.strategyName,
+            // Build-12: số liệu grab thật + số thiết bị Server thấy (chẩn
+            // đoán lỗi tam giác đứng im / gán phím không ăn trên máy thật).
+            grabbed = InputHub.grabbedCount(),
+            grabFailed = InputHub.lastGrabFailed,
+            devices = InputHub.deviceCount(),
         )
     }
 

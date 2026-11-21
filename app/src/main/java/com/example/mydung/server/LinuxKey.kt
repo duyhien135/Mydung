@@ -77,6 +77,18 @@ object LinuxKey {
     const val BTN_SIDE = 0x113
     const val BTN_EXTRA = 0x114
 
+    /**
+     * Mã NỘI BỘ cho lăn chuột (build-12): lăn là event REL (REL_WHEEL),
+     * không phải phím nên không có mã Linux thật. Dùng 1000/1001 (nằm ngoài
+     * dải mã input Linux tối đa 0x2ff) để lưu vào profile như 1 "phím" gán
+     * được: lăn lên = 1000, lăn xuống = 1001. InputProtocol.parseKeyPress
+     * đổi dòng "EV W <v> ..." thành mã này; TouchMapper.onWheel kích hoạt
+     * phần tử gán mã này. Chiều lăn theo quy ước evdev: REL_WHEEL dương =
+     * lăn lên, âm = lăn xuống.
+     */
+    const val WHEEL_UP = 1000
+    const val WHEEL_DOWN = 1001
+
     /** Tên hiển thị ngắn cho mã phím/nút. Mã lạ trả về "K<code>". */
     fun name(code: Int): String = when (code) {
         ESC -> "Esc"
@@ -93,11 +105,13 @@ object LinuxKey {
         LEFT -> "←"
         RIGHT -> "→"
         DELETE -> "Del"
-        BTN_LEFT -> "Chuột trái"
-        BTN_RIGHT -> "Chuột phải"
-        BTN_MIDDLE -> "Chuột giữa"
-        BTN_SIDE -> "Nút hông"
-        BTN_EXTRA -> "Nút phụ"
+        BTN_LEFT -> "Chuột-L"
+        BTN_RIGHT -> "Chuột-R"
+        BTN_MIDDLE -> "Chuột-Giữa"
+        BTN_SIDE -> "Chuột-Back"
+        BTN_EXTRA -> "Chuột-Forward"
+        WHEEL_UP -> "Lăn lên"
+        WHEEL_DOWN -> "Lăn xuống"
         in 2..11 -> "${(code - 1) % 10}"
         in 59..68 -> "F${code - 58}"
         F11 -> "F11"
