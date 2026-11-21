@@ -69,8 +69,15 @@ class TouchMapper(
     private var lastMouseMs = 0L
     private val buttonIds = mutableMapOf<Int, Int>() // mã phím/nút -> id ngón
 
-    /** Chế độ con trỏ (true) hay nhìn tự do bằng camera (false, mặc định). */
-    var cursorMode = false
+    /**
+     * Chế độ con trỏ (true) hay nhìn tự do bằng camera (false). MẶC ĐỊNH
+     * LÀ CON TRỎ (true) — giống GG Mouse Pro: vào game là có con trỏ bấm
+     * được ngay cả ở sảnh; F9 hoặc menu nút K đổi sang nhìn tự do. Đổi
+     * mặc định ở đây thì phải đổi cùng lúc TouchHub.cursorMode (MAPSTATUS
+     * đọc cờ bên đó; 2 cờ lệch nhau thì lần bấm F9 đầu tiên không có tác
+     * dụng vì TouchHub tưởng đang ở chế độ còn lại).
+     */
+    var cursorMode = true
         private set
 
     // Vị trí con trỏ ảo (pixel). Khởi tạo lười ở tâm vùng camera.

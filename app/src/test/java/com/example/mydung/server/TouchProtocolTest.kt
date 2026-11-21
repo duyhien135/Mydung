@@ -36,6 +36,16 @@ class TouchProtocolTest {
     }
 
     @Test
+    fun cursorMode_validAndInvalid() {
+        assertEquals(true, TouchProtocol.parseCursorMode("CURSORMODE 1"))
+        assertEquals(false, TouchProtocol.parseCursorMode("CURSORMODE 0"))
+        assertNull(TouchProtocol.parseCursorMode("CURSORMODE 2"))
+        assertNull(TouchProtocol.parseCursorMode("CURSORMODE"))
+        assertNull(TouchProtocol.parseCursorMode("CURSORMODE on"))
+        assertNull(TouchProtocol.parseCursorMode("MAP 1"))
+    }
+
+    @Test
     fun touchCfg_validSubset() {
         val values = TouchProtocol.parseTouchCfg("TOUCHCFG sensX=1.2 joyR=0.08")
         assertEquals(mapOf("sensX" to 1.2f, "joyR" to 0.08f), values)

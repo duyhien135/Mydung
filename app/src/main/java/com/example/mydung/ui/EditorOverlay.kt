@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
@@ -310,86 +309,6 @@ fun EditorOverlay(
             OutlinedButton(onClick = onCancel) { Text("Hủy", color = Color.White) }
         }
 
-        // Hộp "Thêm thành phần" (kiểu GG Mouse Pro): Chạm / Joystick / Vuốt / Camera.
-        if (showAddMenu) {
-            val hasJoystick = currentElements.any { it.type == ElementType.JOYSTICK }
-            val hasCamera = currentElements.any { it.type == ElementType.CAMERA }
-            AlertDialog(
-                onDismissRequest = { showAddMenu = false },
-                title = { Text("Thêm thành phần") },
-                text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("Chọn một thành phần để đặt lên keymap.")
-                        TextButton(
-                            onClick = {
-                                showAddMenu = false
-                                addElement(
-                                    ProfileElement(
-                                        ElementType.BUTTON, 0.5f, 0.5f,
-                                        Config.DEFAULT_BUTTON_SIZE, null, "Nút mới",
-                                    ),
-                                )
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { Text("👆 Chạm — chạm 1 điểm khi bấm phím", fontSize = 15.sp) }
-                        TextButton(
-                            onClick = {
-                                showAddMenu = false
-                                addElement(
-                                    ProfileElement(
-                                        ElementType.JOYSTICK, Config.JOY_CENTER_X,
-                                        Config.JOY_CENTER_Y, Config.JOY_RADIUS, null, "Joystick",
-                                    ),
-                                )
-                            },
-                            enabled = !hasJoystick,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text(
-                                if (hasJoystick) "🕹 Joystick — đã có rồi" else "🕹 Joystick — di chuyển bằng WASD",
-                                fontSize = 15.sp,
-                            )
-                        }
-                        TextButton(
-                            onClick = {
-                                showAddMenu = false
-                                addElement(
-                                    ProfileElement(
-                                        ElementType.CAMERA, Config.CAM_CENTER_X,
-                                        Config.CAM_CENTER_Y, Config.CAM_HALF_W, null, "Camera",
-                                    ),
-                                )
-                            },
-                            enabled = !hasCamera,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text(
-                                if (hasCamera) "🎥 Camera — đã có rồi" else "🎥 Camera — nhìn bằng chuột (kéo vô hạn)",
-                                fontSize = 15.sp,
-                            )
-                        }
-                        TextButton(
-                            onClick = {
-                                showAddMenu = false
-                                addElement(
-                                    ProfileElement(
-                                        ElementType.SWIPE, 0.35f, 0.5f,
-                                        Config.DEFAULT_BUTTON_SIZE, null, "Vuốt mới",
-                                        enabled = true, x2 = 0.65f, y2 = 0.5f, durationMs = 400L,
-                                    ),
-                                )
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { Text("↔ Vuốt — trượt từ điểm đầu tới điểm cuối", fontSize = 15.sp) }
-                    }
-                },
-                confirmButton = {},
-                dismissButton = {
-                    TextButton(onClick = { showAddMenu = false }) { Text("Đóng") }
-                },
-            )
-        }
-
         // Cảnh báo (phím trùng / phần tử trùng vùng nút nổi K).
         if (warning != null || floatOverlapNames.isNotEmpty()) {
             Column(
@@ -542,6 +461,111 @@ fun EditorOverlay(
                             Spacer(modifier = Modifier.weight(1f))
                             TextButton(onClick = { selected = null }) { Text("Xong") }
                         }
+                    }
+                }
+            }
+        }
+
+        // Hộp "Thêm thành phần" (kiểu GG Mouse Pro): Chạm / Joystick / Vuốt
+        // / Camera. Render INLINE trong cùng cửa sổ overlay (lớp nền mờ +
+        // Card ở giữa) — TUYỆT ĐỐI KHÔNG dùng AlertDialog: nó tạo window
+        // riêng không có token Activity hợp lệ trong Service nên crash
+        // BadTokenException, văng ra màn hình chính (máy thật 22/11/2026).
+        // Đặt cuối cùng trong Box để luôn nằm trên thanh trên/bảng chỉnh.
+        if (showAddMenu) {
+            val hasJoystick = currentElements.any { it.type == ElementType.JOYSTICK }
+            val hasCamera = currentElements.any { it.type == ElementType.CAMERA }
+            // Lớp nền mờ: bấm ra ngoài để đóng.
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.45f))
+                    .clickable(
+                        indication = null,
+                        interactionSource = remember { MutableInteractionSource() },
+                    ) { showAddMenu = false },
+            )
+            Card(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .fillMaxWidth(0.85f),
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        text = "Thêm thành phần",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp,
+                    )
+                    Text("Chọn một thành phần để đặt lên keymap.")
+                    TextButton(
+                        onClick = {
+                            showAddMenu = false
+                            addElement(
+                                ProfileElement(
+                                    ElementType.BUTTON, 0.5f, 0.5f,
+                                    Config.DEFAULT_BUTTON_SIZE, null, "Nút mới",
+                                ),
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("👆 Chạm — chạm 1 điểm khi bấm phím", fontSize = 15.sp) }
+                    TextButton(
+                        onClick = {
+                            showAddMenu = false
+                            addElement(
+                                ProfileElement(
+                                    ElementType.JOYSTICK, Config.JOY_CENTER_X,
+                                    Config.JOY_CENTER_Y, Config.JOY_RADIUS, null, "Joystick",
+                                ),
+                            )
+                        },
+                        enabled = !hasJoystick,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            if (hasJoystick) "🕹 Joystick — đã có rồi" else "🕹 Joystick — di chuyển bằng WASD",
+                            fontSize = 15.sp,
+                        )
+                    }
+                    TextButton(
+                        onClick = {
+                            showAddMenu = false
+                            addElement(
+                                ProfileElement(
+                                    ElementType.CAMERA, Config.CAM_CENTER_X,
+                                    Config.CAM_CENTER_Y, Config.CAM_HALF_W, null, "Camera",
+                                ),
+                            )
+                        },
+                        enabled = !hasCamera,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            if (hasCamera) "🎥 Camera — đã có rồi" else "🎥 Camera — nhìn bằng chuột (kéo vô hạn)",
+                            fontSize = 15.sp,
+                        )
+                    }
+                    TextButton(
+                        onClick = {
+                            showAddMenu = false
+                            addElement(
+                                ProfileElement(
+                                    ElementType.SWIPE, 0.35f, 0.5f,
+                                    Config.DEFAULT_BUTTON_SIZE, null, "Vuốt mới",
+                                    enabled = true, x2 = 0.65f, y2 = 0.5f, durationMs = 400L,
+                                ),
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("↔ Vuốt — trượt từ điểm đầu tới điểm cuối", fontSize = 15.sp) }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        TextButton(onClick = { showAddMenu = false }) { Text("Đóng") }
                     }
                 }
             }

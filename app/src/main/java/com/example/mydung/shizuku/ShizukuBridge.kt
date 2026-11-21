@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.IBinder
 import com.example.mydung.BuildConfig
 import com.example.mydung.PairingState
+import com.example.mydung.server.BindFailureCache
 import com.example.mydung.server.ShizukuNewProcess
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -78,6 +79,15 @@ object ShizukuBridge {
     private var installed = false
 
     /**
+     * Nhớ lần bind lỗi gần nhất (xem [BindFailureCache]): trên máy bind
+     * không bao giờ thành công, mỗi lần thử lại tốn đủ 10s rồi mới fallback
+     * newProcess — khởi động Server chạy nhiều lệnh nên cộng dồn ~2 phút.
+     * Trong 5 phút sau 1 lần bind lỗi, exec() bỏ qua bind, đi thẳng
+     * newProcess; hết 5 phút (hoặc sau unbind) thì thử bind lại 1 lần.
+     */
+    private val bindFailureCache = BindFailureCache()
+
+    /**
      * Đã từng gọi requestPermission() trong phiên này chưa. Cần để phân biệt
      * "chưa từng xin quyền" với "bị từ chối vĩnh viễn": cả 2 trường hợp
      * shouldShowRequestPermissionRationale() đều trả false (chỉ khi bị từ
@@ -120,6 +130,7 @@ object ShizukuBridge {
             }
             val svc = IShellService.Stub.asInterface(binder)
             service = svc
+            bindFailureCache.clear() // bind được rồi: lần lỗi sau lại thử bind bình thường
             pendingBind?.complete(svc)
             pendingBind = null
             PairingState.log("✅ Shizuku: UserService đã bind (pingBinder=true).")
@@ -207,13 +218,25 @@ object ShizukuBridge {
         val deferred = CompletableDeferred<Boolean>()
         pendingPermission = deferred
         permissionRequested = true
-        return runCatching {
+        val granted = runCatching {
             Shizuku.requestPermission(REQUEST_CODE)
             deferred.await()
         }.getOrElse {
             pendingPermission = null
             false
         }
+        if (granted) {
+            // Vừa được cấp quyền: bind thử 1 lần ngay (hàm này đã chạy trên
+            // coroutine nền của màn chính nên không chặn UI) để lần bind lỗi
+            // đầu tiên (nếu có) xảy ra Ở ĐÂY chứ không phải lúc bấm Khởi
+            // động Server — cache lỗi sẽ khiến các lệnh sau đi thẳng
+            // newProcess, Server lên nhanh. Bind được thì càng tốt: service
+            // đã sẵn cho lần exec đầu tiên.
+            runCatching { bindService() }.onFailure { e ->
+                if (e is ShizukuBindException) bindFailureCache.recordFailure()
+            }
+        }
+        return granted
     }
 
     private suspend fun bindService(): IShellService {
@@ -262,6 +285,8 @@ object ShizukuBridge {
      * Chạy `sh -c cmd` bằng quyền shell (uid 2000, hoặc 0 nếu Shizuku chạy bằng root).
      *
      * Thứ tự thử:
+     * 0. Bind vừa lỗi gần đây (trong 5 phút): bỏ qua UserService, đi thẳng
+     *    newProcess (xem [BindFailureCache]) — mỗi lần bind lỗi tốn 10s.
      * 1. UserService + AIDL (đường chính).
      * 2. Binder chết giữa chừng (Shizuku khởi động lại / bị giết) thì bind
      *    lại rồi thử lại 1 lần qua UserService.
@@ -272,6 +297,14 @@ object ShizukuBridge {
      * hình thức — chạy lại 2 lần sẽ khởi động 2 Server.
      */
     suspend fun exec(cmd: String, timeoutMs: Int = 15_000): Result<String> {
+        // Bind vừa lỗi gần đây: bỏ qua bind (đỡ 10s mỗi lệnh), đi thẳng
+        // newProcess. Không log ở đây (mỗi lần khởi động Server chạy nhiều
+        // lệnh, log mỗi lần sẽ spam); lần lỗi đầu đã log ở nhánh fallback.
+        if (bindFailureCache.shouldSkipBind()) {
+            return runCatching {
+                withContext(Dispatchers.IO) { ShizukuNewProcess.exec(cmd, timeoutMs) }
+            }
+        }
         val first = runCatching { execOnce(cmd, timeoutMs) }
         if (first.isSuccess) return first
         var e = first.exceptionOrNull()!!
@@ -285,6 +318,7 @@ object ShizukuBridge {
             e = second.exceptionOrNull()!!
         }
         if (e is ShizukuBindException) {
+            bindFailureCache.recordFailure()
             PairingState.log("⚠ UserService bind lỗi (${e.message}), fallback sang Shizuku.newProcess.")
             return runCatching {
                 withContext(Dispatchers.IO) { ShizukuNewProcess.exec(cmd, timeoutMs) }
@@ -309,6 +343,7 @@ object ShizukuBridge {
     fun unbindService() {
         runCatching { Shizuku.unbindUserService(userServiceArgs, connection, true) }
         service = null
+        bindFailureCache.clear() // sau unbind thì thử bind lại 1 lần như mới
         _state.update { s -> if (s is State.Ready) s.copy(serviceBound = false) else s }
     }
 

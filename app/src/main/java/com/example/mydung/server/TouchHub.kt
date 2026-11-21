@@ -40,9 +40,17 @@ object TouchHub {
     var mapOn = false
         private set
 
-    /** Chế độ con trỏ (true) hay nhìn tự do bằng camera (false, mặc định). */
+    /**
+     * Chế độ con trỏ (true) hay nhìn tự do bằng camera (false). MẶC ĐỊNH
+     * LÀ CON TRỎ (true) — giống GG Mouse Pro: vào game là có con trỏ bấm
+     * được ngay cả ở sảnh; F9 hoặc menu nút K đổi sang nhìn tự do. Cờ này
+     * là nguồn thật cho MAPSTATUS (mode=cursor/camera) và cho phím F9
+     * (setCursorMode(!cursorMode)); phải giữ đồng bộ với
+     * TouchMapper.cursorMode (đổi mặc định thì đổi cả 2, không thì lần bấm
+     * F9 đầu tiên không có tác dụng).
+     */
     @Volatile
-    var cursorMode = false
+    var cursorMode = true
         private set
 
     @Volatile

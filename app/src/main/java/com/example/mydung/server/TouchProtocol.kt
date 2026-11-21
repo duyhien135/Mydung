@@ -49,6 +49,17 @@ object TouchProtocol {
         }
     }
 
+    /** Parse "CURSORMODE 1|0" (menu nút K đổi chế độ con trỏ <-> nhìn tự do). Sai -> null. */
+    fun parseCursorMode(line: String): Boolean? {
+        val p = line.trim().split("\\s+".toRegex())
+        if (p.size != 2 || p[0] != "CURSORMODE") return null
+        return when (p[1]) {
+            "1" -> true
+            "0" -> false
+            else -> null
+        }
+    }
+
     /** Các khóa TOUCHCFG được chấp nhận. */
     val TOUCHCFG_KEYS = setOf(
         "sensX", "sensY", "joyX", "joyY", "joyR", "camX", "camY", "camHW", "camHH",

@@ -80,6 +80,7 @@ class TouchMapperTest {
     @Test
     fun camera_firstMoveDownAtCenterThenMove() {
         val (engine, m) = mapper()
+        m.setCursorMode(false, 0) // mặc định là con trỏ — test camera phải chuyển về nhìn tự do
         val specs = m.process(move(10, 5, 100), 100)
         assertEquals(1, specs.size)
         assertEquals(TouchEngine.ACTION_DOWN, specs[0].action)
@@ -91,6 +92,7 @@ class TouchMapperTest {
     @Test
     fun camera_wrapUpAndDownAtOppositeEdge() {
         val (_, m) = mapper()
+        m.setCursorMode(false, 0) // mặc định là con trỏ — test camera phải chuyển về nhìn tự do
         m.process(move(10, 0, 100), 100) // ngón ở (510, 250)
         // Di tiếp 300px phải: 810 > biên 700 -> UP, DOWN lại hẹn sang tick
         // sau (không cùng khung với UP).
@@ -113,6 +115,7 @@ class TouchMapperTest {
     @Test
     fun camera_moveWhileWaitingToRepress_accumulatesOnPendingPosition() {
         val (engine, m) = mapper()
+        m.setCursorMode(false, 0) // mặc định là con trỏ — test camera phải chuyển về nhìn tự do
         m.process(move(10, 0, 100), 100) // ngón ở (510, 250)
         m.process(move(300, 0, 110), 110) // ra khỏi vùng phải -> UP, hẹn DOWN ở (310, 250)
         assertEquals(0, engine.count)
@@ -127,6 +130,7 @@ class TouchMapperTest {
     @Test
     fun camera_idleRelease() {
         val (_, m) = mapper()
+        m.setCursorMode(false, 0) // mặc định là con trỏ — test camera phải chuyển về nhìn tự do
         m.process(move(10, 0, 100), 100)
         assertEquals(null, m.checkIdle(100 + Config.CAMERA_IDLE_RELEASE_MS - 1))
         val up = m.checkIdle(100 + Config.CAMERA_IDLE_RELEASE_MS + 1)
@@ -149,6 +153,7 @@ class TouchMapperTest {
     @Test
     fun buttons_twoAtOnceAndReleaseOrder() {
         val (_, m) = mapper()
+        m.setCursorMode(false, 0) // mặc định là con trỏ — ở đó BTN_LEFT bấm tại con trỏ, không phải điểm gán
         val d1 = m.process(key(LinuxKey.SPACE, true, 100), 100)
         assertEquals(TouchEngine.ACTION_DOWN, d1.single().action)
         val d2 = m.process(btn(LinuxKey.BTN_LEFT, true, 110), 110)
@@ -177,6 +182,7 @@ class TouchMapperTest {
     @Test
     fun joystickAndCameraAndButton_simultaneous() {
         val (engine, m) = mapper()
+        m.setCursorMode(false, 0) // mặc định là con trỏ — test này cần camera + BTN_LEFT ở điểm gán
         m.process(key(LinuxKey.W, true, 100), 100) // joystick
         m.process(move(5, 0, 110), 110) // camera
         m.process(btn(LinuxKey.BTN_LEFT, true, 120), 120) // bắn
@@ -284,6 +290,19 @@ class TouchMapperTest {
     // ── Chế độ con trỏ (bấm giao diện game bằng chuột) ──
 
     @Test
+    fun defaultMode_isCursor() {
+        val (engine, m) = mapper()
+        assertTrue(m.cursorMode) // mặc định là con trỏ (giống GG Mouse Pro)
+        // Di chuột không đè ngón nào, chỉ di chuyển con trỏ.
+        assertTrue(m.process(move(10, 5, 100), 100).isEmpty())
+        assertEquals(0, engine.count)
+        val (rx, ry) = m.cursorRatio()
+        // Con trỏ khởi tạo ở tâm vùng camera (500, 250), cộng (10, 5).
+        assertEquals(0.51f, rx, 0.001f)
+        assertEquals(0.51f, ry, 0.001f)
+    }
+
+    @Test
     fun cursorMode_mouseMoveMovesCursorNoFinger() {
         val (engine, m) = mapper()
         assertTrue(m.setCursorMode(true, 100).isEmpty())
@@ -317,6 +336,7 @@ class TouchMapperTest {
     @Test
     fun cursorMode_toggleReleasesCameraFinger() {
         val (engine, m) = mapper()
+        m.setCursorMode(false, 0) // về nhìn tự do trước để có ngón camera mà nhả
         m.process(move(10, 0, 100), 100) // ngón camera đang đè
         assertTrue(engine.isDown(TouchEngine.POINTER_CAMERA))
         val specs = m.setCursorMode(true, 110)
@@ -332,6 +352,7 @@ class TouchMapperTest {
     @Test
     fun cursorMode_toggleReleasesHeldMouseButton() {
         val (engine, m) = mapper()
+        m.setCursorMode(false, 0) // về nhìn tự do trước để có ngón camera + ngón bắn mà nhả
         // Giữ chuột trái để bắn (ngón nút id 2) + ngón camera đang đè.
         m.process(move(10, 0, 100), 100)
         m.process(btn(LinuxKey.BTN_LEFT, true, 105), 105)

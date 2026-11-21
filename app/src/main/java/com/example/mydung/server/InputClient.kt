@@ -72,6 +72,11 @@ object InputClient {
         return command(port, token, "MAP ${if (on) 1 else 0}")
     }
 
+    /** Đổi chế độ con trỏ (true) <-> nhìn tự do (false). Trả "OK CURSOR 1|0". */
+    fun setCursorMode(port: Int, token: String, on: Boolean): String {
+        return command(port, token, "CURSORMODE ${if (on) 1 else 0}")
+    }
+
     /** Lấy trạng thái MAP ("MAP map=1 display=... pointers=.. latencyMs=.. injectErr=.. injectOk=.."). */
     fun mapStatus(port: Int, token: String): String {
         return command(port, token, "MAPSTATUS")

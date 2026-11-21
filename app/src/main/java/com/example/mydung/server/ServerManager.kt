@@ -376,9 +376,12 @@ object ServerManager {
                 try {
                     val port = findFreePort()
                     val token = generateToken()
-                    // Lấy đường dẫn APK bằng `pm path` lúc khởi động: phần
-                    // ngẫu nhiên trong /data/app/... đổi sau mỗi lần cài lại
-                    // app, sourceDir của tiến trình đang chạy có thể đã cũ.
+                    // Đường dẫn APK: lấy sourceDir của tiến trình app đang
+                    // chạy TRƯỚC (không tốn lệnh shell — mỗi lệnh qua
+                    // Shizuku bind lỗi tốn 10s); chỉ hỏi `pm path` khi
+                    // sourceDir trống. sourceDir không bao giờ cũ: cài lại
+                    // app thì hệ thống kill tiến trình cũ, tiến trình mới
+                    // luôn chạy từ APK mới.
                     val apkPath = resolveApkPath(executor, context)
                     PairingState.log("[Lần $attempt/2] Đã chọn cổng ngẫu nhiên: $port, APK: $apkPath, VersionCode: $appVersionCode")
 
@@ -666,13 +669,17 @@ object ServerManager {
     }
 
     /**
-     * Lấy đường dẫn APK hiện tại bằng `pm path` (qua executor, chạy bằng
-     * quyền shell). Phần ngẫu nhiên trong /data/app/<random>/... đổi sau
-     * mỗi lần cài lại app nên không được dùng đường dẫn cố định; lấy lỗi
-     * thì dùng sourceDir của tiến trình app đang chạy.
+     * Lấy đường dẫn APK hiện tại. Dùng sourceDir của tiến trình app đang
+     * chạy TRƯỚC (không tốn lệnh shell): cài lại app thì hệ thống kill
+     * tiến trình cũ nên sourceDir không bao giờ cũ, kể cả phần ngẫu nhiên
+     * trong /data/app/<random>/... Chỉ khi sourceDir null/rỗng (hiếm) mới
+     * hỏi package manager bằng `pm path` qua executor. Cả 2 đều lỗi thì
+     * trả "" — lệnh khởi động sẽ lỗi rõ ràng ở bước CLASSPATH thay vì
+     * dùng đường dẫn cũ sai.
      */
     private suspend fun resolveApkPath(executor: ShellExecutor, context: Context): String {
-        val fallback = context.applicationInfo.sourceDir
+        val sourceDir = context.applicationInfo.sourceDir
+        if (!sourceDir.isNullOrEmpty()) return sourceDir
         return try {
             val out = executor.run("pm path ${context.packageName}").trim()
             // "package:/data/app/~~xxx/com.example.mydung-xxx/base.apk"
@@ -683,17 +690,14 @@ object ServerManager {
                 ?.trim()
                 ?.takeIf { it.isNotEmpty() }
             if (path == null) {
-                PairingState.log("pm path không trả về đường dẫn (out='$out'), dùng sourceDir.")
-                fallback
+                PairingState.log("sourceDir trống và pm path không trả về đường dẫn (out='$out').")
+                ""
             } else {
-                if (path != fallback) {
-                    PairingState.log("pm path trả về APK khác sourceDir, dùng pm path: $path")
-                }
                 path
             }
         } catch (e: Exception) {
-            PairingState.log("Không lấy được APK qua pm path (${e.javaClass.simpleName}: ${e.message}), dùng sourceDir.")
-            fallback
+            PairingState.log("sourceDir trống và không lấy được APK qua pm path (${e.javaClass.simpleName}: ${e.message}).")
+            ""
         }
     }
 

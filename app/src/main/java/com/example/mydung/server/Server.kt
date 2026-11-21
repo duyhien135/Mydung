@@ -289,6 +289,11 @@ object Server {
                         if (on == null) reply("ERR bad_map_args")
                         else reply(TouchHub.setMap(on))
                     }
+                    trimmed.startsWith("CURSORMODE ") -> {
+                        val on = TouchProtocol.parseCursorMode(trimmed)
+                        if (on == null) reply("ERR bad_cursormode_args")
+                        else reply(TouchHub.setCursorMode(on))
+                    }
                     trimmed == "MAPSTATUS" -> {
                         reply(TouchHub.mapStatus())
                     }

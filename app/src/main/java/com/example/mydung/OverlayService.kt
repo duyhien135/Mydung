@@ -52,9 +52,12 @@ import kotlinx.coroutines.withContext
  * Foreground service giữ lớp phủ nổi (GĐ5, làm lại giao diện theo GG Mouse Pro).
  *
  * 2 chế độ:
- * - Chơi: nút nổi tròn chữ K (bấm = bật/tắt MAP, giữ = mở trình sửa, kéo =
- *   di chuyển). Cửa sổ WRAP_CONTENT nên vùng nhận chạm chỉ đúng bằng nút,
- *   phần còn lại của màn hình game vẫn chạm bình thường.
+ * - Chơi: nút nổi tròn chữ K (bấm = mở bảng điều khiển, giữ = mở trình
+ *   sửa, kéo = di chuyển). Bảng điều khiển có bật/tắt keymap, chỉnh nút,
+ *   đổi chế độ con trỏ ↔ nhìn tự do, cài đặt nhanh (độ nhạy chuột, kích
+ *   thước con trỏ, trong suốt logo) và mở app. Cửa sổ WRAP_CONTENT khi
+ *   bảng đóng nên vùng nhận chạm chỉ đúng bằng nút, phần còn lại của màn
+ *   hình game vẫn chạm bình thường; bảng mở thì cửa sổ đổi sang MATCH_PARENT.
  * - Chỉnh: toàn màn hình, nhận chạm để kéo thả nút. Lưu xong quay về chế độ chơi.
  *
  * Service là LifecycleOwner + SavedStateRegistryOwner cho ComposeView (Compose
@@ -90,6 +93,12 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         private const val KEY_FLOAT_Y = "float_y_ratio"
         private const val FLOAT_DEFAULT_X = 0.93f // mép phải
         private const val FLOAT_DEFAULT_Y = 0.12f // gần đỉnh
+
+        // Cài đặt nhanh trong bảng nổi (lưu cùng keytouch_prefs).
+        private const val KEY_CURSOR_DOT_SIZE_DP = "cursor_dot_size_dp"
+        private const val KEY_FLOAT_ALPHA = "float_alpha"
+        private const val CURSOR_DOT_DEFAULT_DP = 24
+        private const val FLOAT_DEFAULT_ALPHA = 0.65f
 
         /** Vị trí nút nổi đã lưu (tỉ lệ 0-1) — trình sửa dùng để cảnh báo phím trùng vùng nút nổi. */
         fun savedFloatRatio(context: Context): Pair<Float, Float> {
@@ -138,6 +147,21 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
     /** Trạng thái MAP (poll mỗi 2s) cho chỉ báo chế độ chơi. */
     val mapOn = MutableStateFlow(false)
 
+    /** Chế độ con trỏ hiện tại (poll MAPSTATUS) — bảng nổi dùng để hiện đúng mục đổi chế độ. */
+    val cursorMode = MutableStateFlow(false)
+
+    /** Vị trí nút nổi (pixel, góc trên-trái cửa sổ) — bảng nổi dùng để neo vị trí. */
+    val floatPosPx = MutableStateFlow(0 to 0)
+
+    /** Độ nhạy chuột của profile đang dùng — thanh trượt trong bảng Cài đặt. */
+    val sensitivity = MutableStateFlow(Config.SENS_X)
+
+    /** Kích thước chấm con trỏ (dp) — thanh trượt trong bảng Cài đặt. */
+    val cursorDotSizeDp = MutableStateFlow(CURSOR_DOT_DEFAULT_DP)
+
+    /** Độ trong suốt nền nút K (0.2..1) — thanh trượt trong bảng Cài đặt. */
+    val floatAlpha = MutableStateFlow(FLOAT_DEFAULT_ALPHA)
+
     /** Index phần tử đang chờ gán phím (null = không chờ). */
     val captureRequest = MutableStateFlow<Int?>(null)
 
@@ -154,6 +178,12 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         savedStateRegistryController.performRestore(null)
         lifecycleRegistry.currentState = Lifecycle.State.CREATED
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        // Cài đặt nhanh đã lưu (kích thước con trỏ, trong suốt logo).
+        val prefs = getSharedPreferences(PREFS_APP, MODE_PRIVATE)
+        cursorDotSizeDp.value =
+            prefs.getInt(KEY_CURSOR_DOT_SIZE_DP, CURSOR_DOT_DEFAULT_DP).coerceIn(12, 48)
+        floatAlpha.value =
+            prefs.getFloat(KEY_FLOAT_ALPHA, FLOAT_DEFAULT_ALPHA).coerceIn(0.2f, 1f)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -231,21 +261,43 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
 
     private fun showPlayOverlay() {
         removeOverlay()
+        // Vị trí nút nổi + độ nhạy profile đang dùng (bảng nổi đọc).
+        val pos = savedFloatPosition()
+        floatPosPx.value = pos
+        runCatching {
+            val store = ProfileStore(ProfileStore.defaultFile(filesDir))
+            val state = store.ensureDefault()
+            val active = state.profiles.firstOrNull { it.id == state.activeId }
+                ?: state.profiles.first()
+            sensitivity.value = active.sensX
+        }
         val view = ComposeView(this)
         view.setViewTreeLifecycleOwner(this)
         view.setViewTreeSavedStateRegistryOwner(this)
         view.setContent {
             FloatingButton(
                 mapOn = mapOn,
+                cursorMode = cursorMode,
+                buttonPosPx = floatPosPx,
+                logoAlpha = floatAlpha,
+                sensitivity = sensitivity,
+                cursorDotSizeDp = cursorDotSizeDp,
                 onToggleMap = { toggleMap() },
+                onToggleCursorMode = { toggleCursorMode() },
                 onOpenEditor = { openEditor() },
+                onOpenApp = { openApp() },
+                onSensitivityChange = { v -> applySensitivity(v) },
+                onCursorDotSizeChange = { dp -> setCursorDotSize(dp) },
+                onLogoAlphaChange = { a -> setFloatAlpha(a) },
                 onDrag = { drag -> moveFloatingButton(drag.x, drag.y) },
+                onMenuOpenChange = { open -> setMenuOpen(open) },
             )
         }
         // Nút nổi CẦN nhận chạm (bấm/giữ/kéo) nên KHÔNG đặt NOT_TOUCHABLE.
         // Cửa sổ WRAP_CONTENT nên vùng nhận chạm chỉ đúng bằng nút, không
         // chặn cảm ứng game ở chỗ khác. NOT_TOUCH_MODAL: chạm ngoài nút đi
-        // thẳng xuống game, không bị cửa sổ này giữ lại.
+        // thẳng xuống game, không bị cửa sổ này giữ lại. Bảng nổi mở thì
+        // setMenuOpen() đổi cửa sổ sang MATCH_PARENT.
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -256,7 +308,6 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            val pos = savedFloatPosition()
             x = pos.first
             y = pos.second
         }
@@ -264,6 +315,35 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         overlayView = view
         lifecycleRegistry.currentState = Lifecycle.State.RESUMED
         pollMapStatus()
+    }
+
+    /**
+     * Đổi kích thước cửa sổ nút nổi theo bảng điều khiển: bảng mở thì
+     * MATCH_PARENT toàn màn hình (bảng + lớp nền bấm-ra-ngoài có chỗ hiện;
+     * nút K vẽ lại đúng vị trí đã lưu bên trong nội dung), bảng đóng thì
+     * về WRAP_CONTENT ở đúng vị trí nút. Chạy trên luồng chính (gọi từ
+     * pointerInput của Compose).
+     */
+    private fun setMenuOpen(open: Boolean) {
+        val view = overlayView ?: return
+        val wm = windowManager ?: return
+        val params = view.layoutParams as? WindowManager.LayoutParams ?: return
+        try {
+            if (open) {
+                params.width = WindowManager.LayoutParams.MATCH_PARENT
+                params.height = WindowManager.LayoutParams.MATCH_PARENT
+                params.x = 0
+                params.y = 0
+            } else {
+                params.width = WindowManager.LayoutParams.WRAP_CONTENT
+                params.height = WindowManager.LayoutParams.WRAP_CONTENT
+                val pos = floatPosPx.value
+                params.x = pos.first
+                params.y = pos.second
+            }
+            wm.updateViewLayout(view, params)
+        } catch (_: Exception) {
+        }
     }
 
     /** Vị trí nút nổi đã lưu (tỉ lệ -> pixel, kẹp trong màn hình). */
@@ -293,6 +373,7 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         } catch (_: Exception) {
             return
         }
+        floatPosPx.value = params.x to params.y
         getSharedPreferences(PREFS_APP, MODE_PRIVATE).edit()
             .putFloat(KEY_FLOAT_X, params.x.toFloat() / w)
             .putFloat(KEY_FLOAT_Y, params.y.toFloat() / h)
@@ -331,6 +412,87 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                 }
             }
         }
+    }
+
+    /** Đổi chế độ con trỏ <-> nhìn tự do từ bảng nổi (lệnh CURSORMODE). */
+    private fun toggleCursorMode() {
+        scope.launch(Dispatchers.IO) {
+            val c = ServerManager.getSavedConnection(this@OverlayService)
+            if (c == null) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(this@OverlayService, "Chưa có Server đang chạy", Toast.LENGTH_SHORT).show()
+                }
+                return@launch
+            }
+            try {
+                val wantCursor = !cursorMode.value
+                val resp = InputClient.setCursorMode(c.first, c.second, wantCursor)
+                if (resp.startsWith("OK")) {
+                    cursorMode.value = wantCursor
+                } else {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(this@OverlayService, "Không đổi được chế độ: $resp", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(this@OverlayService, "Lỗi đổi chế độ: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    /** Mở app KeyTouch (mục trong bảng nổi — để vào phần kích hoạt/danh sách game). */
+    private fun openApp() {
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        startActivity(intent)
+    }
+
+    /**
+     * Đổi độ nhạy chuột từ bảng Cài đặt: lưu vào profile đang dùng (đặt cả
+     * X và Y bằng nhau — bảng nổi chỉ có 1 thanh trượt chung; muốn chỉnh
+     * riêng X/Y thì vào tab Cấu hình trong app) + gửi TOUCHCFG cho Server
+     * áp dụng ngay. Server chưa chạy thì chỉ lưu profile, lần gửi profile
+     * sau sẽ áp dụng.
+     */
+    private fun applySensitivity(value: Float) {
+        val v = value.coerceIn(0.1f, 5f)
+        sensitivity.value = v
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                val store = ProfileStore(ProfileStore.defaultFile(filesDir))
+                val state = store.load()
+                val activeId = state.activeId ?: state.profiles.firstOrNull()?.id
+                if (activeId != null) {
+                    val updated = state.profiles.map {
+                        if (it.id == activeId) it.copy(sensX = v, sensY = v) else it
+                    }
+                    store.save(updated, activeId)
+                }
+            }
+            val c = ServerManager.getSavedConnection(this@OverlayService) ?: return@launch
+            runCatching {
+                InputClient.sendTouchCfg(c.first, c.second, mapOf("sensX" to v, "sensY" to v))
+            }
+        }
+    }
+
+    /** Đổi kích thước chấm con trỏ (lưu prefs + cập nhật flow để CursorDot vẽ lại). */
+    private fun setCursorDotSize(dp: Int) {
+        val v = dp.coerceIn(12, 48)
+        cursorDotSizeDp.value = v
+        getSharedPreferences(PREFS_APP, MODE_PRIVATE).edit()
+            .putInt(KEY_CURSOR_DOT_SIZE_DP, v).apply()
+    }
+
+    /** Đổi độ trong suốt nền nút K (lưu prefs + cập nhật flow để nút vẽ lại). */
+    private fun setFloatAlpha(alpha: Float) {
+        val v = alpha.coerceIn(0.2f, 1f)
+        floatAlpha.value = v
+        getSharedPreferences(PREFS_APP, MODE_PRIVATE).edit()
+            .putFloat(KEY_FLOAT_ALPHA, v).apply()
     }
 
     /** Giữ nút nổi -> mở trình sửa với profile đang dùng. */
@@ -436,6 +598,7 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                         poller = null
                         pollerKey = null
                     }
+                    this@OverlayService.cursorMode.value = cursorMode
                     if (!cursorMode) {
                         withContext(Dispatchers.Main) { hideCursorDot() }
                     }
@@ -456,7 +619,7 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         val d = readRealDisplay(this)
         val w = d?.width ?: resources.displayMetrics.widthPixels
         val h = d?.height ?: resources.displayMetrics.heightPixels
-        val dotPx = (24 * resources.displayMetrics.density).toInt()
+        val dotPx = (cursorDotSizeDp.value * resources.displayMetrics.density).toInt()
         val x = (rx * w).toInt() - dotPx / 2
         val y = (ry * h).toInt() - dotPx / 2
         val view = cursorView
@@ -464,7 +627,7 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
             val v = ComposeView(this)
             v.setViewTreeLifecycleOwner(this)
             v.setViewTreeSavedStateRegistryOwner(this)
-            v.setContent { CursorDot() }
+            v.setContent { CursorDot(cursorDotSizeDp) }
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
