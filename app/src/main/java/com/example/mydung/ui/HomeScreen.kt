@@ -20,6 +20,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -598,7 +599,9 @@ fun HomeScreen(
 
         // Chi tiết lỗi Server khi khởi động thất bại: giai đoạn bị kẹt +
         // 25 dòng cuối của log Server + nút sao chép log.
-        if (serverInfo.status == ServerStatus.ERROR && serverInfo.logTail != null) {
+        // serverInfo là delegated property nên không smart-cast được — hứng ra biến cục bộ.
+        val logTail = serverInfo.logTail
+        if (serverInfo.status == ServerStatus.ERROR && logTail != null) {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier.padding(14.dp),
@@ -614,13 +617,13 @@ fun HomeScreen(
                         TextButton(onClick = {
                             val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                             cm.setPrimaryClip(
-                                ClipData.newPlainText("KeyTouch server log", serverInfo.logTail),
+                                ClipData.newPlainText("KeyTouch server log", logTail),
                             )
                             Toast.makeText(context, "Đã chép log Server", Toast.LENGTH_SHORT).show()
                         }) { Text("Sao chép log") }
                     }
                     Text(
-                        text = serverInfo.logTail,
+                        text = logTail,
                         style = MaterialTheme.typography.bodySmall,
                         fontFamily = FontFamily.Monospace,
                         modifier = Modifier

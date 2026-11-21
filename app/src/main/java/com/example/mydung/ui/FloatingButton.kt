@@ -84,7 +84,8 @@ fun FloatingButton(
                         }
                         val change = event.changes.firstOrNull { it.id == downId }
                             ?: continue
-                        if (change.changedToUpOrCanceled()) {
+                        // Nhả tay hoặc bị hủy: changedToUpOrCanceled() không có trong BOM này.
+                        if (!change.pressed) {
                             if (!longPressed && dragTotal.distance() < touchSlop) {
                                 onToggleMap()
                             }
@@ -92,7 +93,8 @@ fun FloatingButton(
                         }
                         // Chỉ xử lý sự kiện Move (Press của ngón khác thì bỏ qua).
                         if (event.type != PointerEventType.Move) continue
-                        val drag = change.positionChange()
+                        // positionChange() không còn là hàm trong BOM này.
+                        val drag = change.position - change.previousPosition
                         if (drag != Offset.Zero) {
                             dragTotal += drag
                             if (dragTotal.distance() >= touchSlop) {
