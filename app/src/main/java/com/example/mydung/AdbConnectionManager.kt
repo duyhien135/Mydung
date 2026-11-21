@@ -160,11 +160,13 @@ class AdbConnectionManager private constructor(
      * Đã kết nối ADB thành công chưa — cờ do app tự theo dõi:
      * connectDevice/autoConnectDevice đặt true khi bắt tay TLS xong,
      * runShellCommand đặt false khi mở stream lỗi (kết nối đã rớt).
-     * libadb không có sẵn API trạng thái này nên không dùng isConnected()
-     * của thư viện.
+     * Đặt tên adbConnected (không phải isConnected) vì lớp cha
+     * AbsAdbConnectionManager đã có hàm isConnected() — đặt trùng tên
+     * thì getter của thuộc tính đụng JVM signature với hàm đó (lỗi
+     * "Accidental override" ở CI build-4).
      */
     @Volatile
-    var isConnected: Boolean = false
+    var adbConnected: Boolean = false
         private set
 
     data class MdnsResult(val host: String?, val port: Int)
@@ -236,12 +238,12 @@ class AdbConnectionManager private constructor(
             disconnect()
         } catch (_: Exception) {
         }
-        isConnected = false
+        adbConnected = false
 
         PairingState.log("Kết nối ADB: Đang bắt đầu bắt tay TLS tới $host:$port bằng khóa $keyFingerprint...")
         return try {
             val ok = connect(host, port)
-            isConnected = ok
+            adbConnected = ok
             if (ok) {
                 PairingState.log("Kết nối ADB: ✅ THÀNH CÔNG! Đã kết nối với $host:$port")
             } else {
@@ -249,19 +251,19 @@ class AdbConnectionManager private constructor(
             }
             ok
         } catch (e: AdbPairingRequiredException) {
-            isConnected = false
+            adbConnected = false
             PairingState.log("❌ Lỗi AdbPairingRequiredException: Thiết bị từ chối kết nối (yêu cầu ghép cặp lại). Chi tiết: ${e.message}")
             throw e
         } catch (e: AdbAuthenticationFailedException) {
-            isConnected = false
+            adbConnected = false
             PairingState.log("❌ Lỗi AdbAuthenticationFailedException: Thiết bị từ chối xác thực. Chi tiết: ${e.message}")
             throw e
         } catch (e: IOException) {
-            isConnected = false
+            adbConnected = false
             PairingState.log("❌ Lỗi kết nối mạng IO (${e.javaClass.simpleName}): ${e.message}")
             throw e
         } catch (e: Exception) {
-            isConnected = false
+            adbConnected = false
             PairingState.log("❌ Lỗi ngoại lệ kết nối (${e.javaClass.simpleName}): ${e.message}")
             throw e
         }
@@ -274,7 +276,7 @@ class AdbConnectionManager private constructor(
         PairingState.log("Tự kết nối: Đang dò mDNS và kết nối (timeout ${timeoutMs / 1000}s) với khóa $keyFingerprint...")
         return try {
             val ok = autoConnect(appContext, timeoutMs)
-            isConnected = ok
+            adbConnected = ok
             if (ok) {
                 PairingState.log("Tự kết nối: ✅ THÀNH CÔNG!")
             } else {
@@ -282,7 +284,7 @@ class AdbConnectionManager private constructor(
             }
             ok
         } catch (e: Exception) {
-            isConnected = false
+            adbConnected = false
             PairingState.log("Tự kết nối: ❌ Ngoại lệ (${e.javaClass.simpleName}): ${e.message}")
             throw e
         }
@@ -296,7 +298,7 @@ class AdbConnectionManager private constructor(
             openStream("shell:$command")
         } catch (e: Exception) {
             // Mở stream lỗi = kết nối đã rớt (đổi Wi-Fi, tắt gỡ lỗi...).
-            isConnected = false
+            adbConnected = false
             throw e
         }
         val out = StringBuilder()

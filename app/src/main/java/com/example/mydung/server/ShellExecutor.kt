@@ -38,7 +38,7 @@ interface ShellExecutor {
 class AdbShellExecutor(private val adb: AdbConnectionManager) : ShellExecutor {
     override val label = "ADB"
     override val method = ActivationMethod.ADB
-    override suspend fun isReady(): Boolean = adb.isConnected
+    override suspend fun isReady(): Boolean = adb.adbConnected
     override suspend fun run(command: String): String =
         withContext(Dispatchers.IO) { adb.runShellCommand(command) }
 }
