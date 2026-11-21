@@ -198,12 +198,12 @@ object ShizukuBridge {
         val deferred = CompletableDeferred<IShellService>()
         pendingBind = deferred
         return try {
-            val sent = withContext(Dispatchers.Main) {
+            // bindUserService trả void (không có giá trị trả về) — bind lỗi
+            // thì ServiceConnection.onServiceDisconnected hoặc timeout 35s
+            // sẽ báo; không check được ngay như hàm trả boolean.
+            withContext(Dispatchers.Main) {
                 Shizuku.bindUserService(userServiceArgs, connection)
             }
-            // bindUserService trả false khi binder chưa sẵn sàng — lỗi ngay
-            // thay vì đợi hết 35s timeout rồi mới biết.
-            check(sent) { "Shizuku từ chối bind UserService (binder chưa sẵn sàng)" }
             withTimeout(BIND_TIMEOUT_MS) { deferred.await() }
         } catch (t: Throwable) {
             pendingBind = null
