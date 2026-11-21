@@ -58,13 +58,16 @@ import kotlinx.coroutines.launch
 
 /**
  * Tab Cài đặt: chọn phương thức kích hoạt, cách tiêm cảm ứng, thao tác
- * Server (Ping / Dừng / Xem log), nhật ký gỡ lỗi, thông tin app.
+ * Server (Ping / Dừng / Xem log), kiểm tra phím/cảm ứng, nhật ký gỡ lỗi,
+ * thông tin app.
  */
 @Composable
 fun SettingsScreen(
     method: ActivationMethod,
     onMethodChange: (ActivationMethod) -> Unit,
     onOpenAdbSetup: () -> Unit,
+    onOpenInputTest: () -> Unit,
+    onOpenTouchTest: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -148,6 +151,9 @@ fun SettingsScreen(
                     desc = "Qua app Shizuku, không cần ghép nối ADB tay. Dùng cho máy không root (Redmi).",
                     onSelect = {
                         ActivationPrefs.set(context, it)
+                        // Đổi phương thức = ngữ cảnh mới: lần dừng Server cũ
+                        // không còn áp dụng, màn chính được auto-start lại.
+                        ServerManager.clearUserStopped()
                         onMethodChange(it)
                     },
                 )
@@ -158,6 +164,7 @@ fun SettingsScreen(
                     desc = "Qua su trên máy đã root. Ổn định nhất, không cần kích hoạt lại (Y700 KernelSU).",
                     onSelect = {
                         ActivationPrefs.set(context, it)
+                        ServerManager.clearUserStopped()
                         onMethodChange(it)
                     },
                 )
@@ -168,6 +175,7 @@ fun SettingsScreen(
                     desc = "Ghép cặp gỡ lỗi không dây rồi tự nối (đường cũ). Cần Wi-Fi + ghép cặp 6 số.",
                     onSelect = {
                         ActivationPrefs.set(context, it)
+                        ServerManager.clearUserStopped()
                         onMethodChange(it)
                     },
                 )
@@ -178,6 +186,30 @@ fun SettingsScreen(
                             .fillMaxWidth()
                             .padding(8.dp),
                     ) { Text("Mở cài đặt ADB (ghép cặp / kết nối)") }
+                }
+            }
+        }
+
+        // Ghi chú riêng cho máy Xiaomi/HyperOS (Redmi): 2 chỗ hay quên.
+        // (Trước nằm ở màn chính, dời sang đây cho màn chính gọn.)
+        if (Build.MANUFACTURER.equals("Xiaomi", ignoreCase = true)) {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        "⚠ Lưu ý cho máy Xiaomi/HyperOS",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        "• Trong Tùy chọn nhà phát triển, bật thêm \"Gỡ lỗi USB (cài đặt bảo mật)\" " +
+                            "— thiếu thì tiêm chạm có thể âm thầm thất bại.\n" +
+                            "• Bật Tự khởi động cho KeyTouch trong Cài đặt → Ứng dụng → KeyTouch " +
+                            "(HyperOS giết app nền rất mạnh).",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
             }
         }
@@ -242,6 +274,28 @@ fun SettingsScreen(
                 },
                 modifier = Modifier.weight(1.3f),
             ) { Text("📄 Xem log Server", fontSize = 13.sp) }
+        }
+
+        // Kiểm tra phím/cảm ứng (trước nằm ở màn chính, dời sang đây).
+        Text(
+            "Kiểm tra",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Button(
+                onClick = onOpenInputTest,
+                enabled = serverRunning,
+                modifier = Modifier.weight(1f),
+            ) { Text("⌨️ Thử phím", fontSize = 13.sp) }
+            Button(
+                onClick = onOpenTouchTest,
+                enabled = serverRunning,
+                modifier = Modifier.weight(1f),
+            ) { Text("👆 Thử cảm ứng", fontSize = 13.sp) }
         }
 
         // Nhật ký.

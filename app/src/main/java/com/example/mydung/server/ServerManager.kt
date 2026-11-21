@@ -85,6 +85,24 @@ object ServerManager {
     private val _serverInfoFlow = MutableStateFlow(ServerInfo())
     val serverInfoFlow = _serverInfoFlow.asStateFlow()
 
+    // Đã kiểm tra xong Server cũ lúc mở app (checkOrReconnectServer) chưa.
+    // Màn chính đợi cờ này rồi mới tự khởi động Server — không thì auto-start
+    // chạy đua với lần ping Server cũ, có thể đẻ ra 2 Server cùng lúc.
+    private val _reconnectDoneFlow = MutableStateFlow(false)
+    val reconnectDoneFlow = _reconnectDoneFlow.asStateFlow()
+
+    // Người dùng đã bấm "Dừng Server" (tab Cài đặt) — auto-start không được
+    // khởi động lại cho tới khi họ bấm khởi động tay (startServer xóa cờ này).
+    // Chỉ lưu trong RAM: mở app lại từ đầu thì auto-start chạy như thường.
+    @Volatile
+    var userStoppedServer = false
+        private set
+
+    /** Đổi phương thức kích hoạt = ngữ cảnh mới: lần dừng Server cũ không còn áp dụng. */
+    fun clearUserStopped() {
+        userStoppedServer = false
+    }
+
     private var heartbeatJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO)
 
@@ -280,6 +298,7 @@ object ServerManager {
                         startDisplayListener(context, port, token)
                         startFgWatcher(context, port, token)
                         startKeepAlive(context)
+                        _reconnectDoneFlow.value = true
                         return@launch
                     } else {
                         PairingState.log("⚠ Phát hiện Server cũ đang chạy version=${info.versionCode} (App hiện tại là $currentAppVersion). Đang dừng bản cũ để cập nhật...")
@@ -297,6 +316,7 @@ object ServerManager {
 
             _serverInfoFlow.value = ServerInfo(status = ServerStatus.STOPPED)
             stopKeepAlive(context)
+            _reconnectDoneFlow.value = true
         }
     }
 
@@ -310,6 +330,12 @@ object ServerManager {
             PairingState.log("Server đang trong quá trình khởi động, vui lòng chờ...")
             return
         }
+        if (_serverInfoFlow.value.status == ServerStatus.RUNNING) {
+            PairingState.log("Server đã chạy rồi, không khởi động thêm.")
+            return
+        }
+        // Khởi động (tay hay tự động) đều xóa ý "đã dừng Server" trước đó.
+        userStoppedServer = false
 
         _serverInfoFlow.value = ServerInfo(status = ServerStatus.STARTING)
         PairingState.log("── Bắt đầu khởi động Server đặc quyền (qua ${executor.label}) ──")
@@ -597,6 +623,8 @@ object ServerManager {
      * Dừng Server: Gửi STOP qua TCP socket.
      */
     fun stopServer(context: Context, onComplete: ((Boolean) -> Unit)? = null) {
+        // Người dùng chủ động dừng: auto-start ở màn chính không được bật lại.
+        userStoppedServer = true
         stopHeartbeat()
         stopDisplayListener()
         stopFgWatcher()

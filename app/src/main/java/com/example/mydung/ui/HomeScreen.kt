@@ -40,7 +40,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -65,6 +64,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationManagerCompat
@@ -93,25 +93,25 @@ import kotlinx.coroutines.withContext
 import java.util.UUID
 
 /**
- * Tab Game — màn hình chính mới (theo mẫu K7XD + GG Mouse Pro):
+ * Tab Game — màn hình chính tối giản (build-8, theo ý người dùng: gọn như
+ * GG Mouse Pro / K7XD):
  *
- * - Viên trạng thái quyền (LỚP PHỦ / THÔNG BÁO / PIN / SHIZUKU): xanh = đã cấp,
- *   cam = chưa; bấm vào để cấp/mở cài đặt.
- * - Viên trạng thái thiết bị: tên chuột/bàn phím đã cắm (tự phát hiện khi
- *   cắm/rút OTG).
- * - MỘT dòng trạng thái duy nhất + MỘT nút lớn (theo ý Claude):
- *   Chưa kích hoạt -> Đang kích hoạt -> Đã kết nối -> Đang chạy.
- * - Checklist kích hoạt từng bước có dấu ✓ (kiểu GG).
- * - Danh sách game: KHỞI CHẠY (mở game + bật keymap) / XÓA / + Thêm game.
+ * - Server TỰ khởi động khi mở app (không còn nút khởi động tay): màn chính
+ *   đợi kiểm tra xong Server cũ + phương thức sẵn sàng rồi gọi startServer()
+ *   ngầm 1 lần. Chỉ hiện "Đang chuẩn bị…" rồi "Sẵn sàng".
+ * - Màn chính chỉ còn: 1 dòng trạng thái + danh sách game (KHỞI CHẠY).
+ *   Viên quyền / hàng thiết bị / checklist chỉ hiện khi CÓ gì chưa xong
+ *   (quyền thiếu, đã cắm chuột/phím, bước kích hoạt chưa xong).
+ * - Không hiện PID/UID/cổng lên UI nữa (chỉ ghi log). Lỗi Server thì hiện
+ *   1 dòng ngắn + nút "Thử lại", log chi tiết vẫn ở dưới để sao chép.
+ * - Chỉnh nút nằm trong bảng nút nổi K; Thử phím/Thử cảm ứng chuyển sang
+ *   tab Cài đặt.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun HomeScreen(
     method: ActivationMethod,
-    onOpenInputTest: () -> Unit,
-    onOpenTouchTest: () -> Unit,
     onOpenAdbSetup: () -> Unit,
-    onGoToProfiles: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -122,13 +122,16 @@ fun HomeScreen(
     val serverInfo by ServerManager.serverInfoFlow.collectAsState()
     val overlayRunning by OverlayService.runningFlow.collectAsState()
     val connState by PairingState.stateFlow.collectAsState()
+    // Đã kiểm tra xong Server cũ lúc mở app chưa (đợi cờ này rồi mới tự start,
+    // không thì chạy đua với lần ping Server cũ).
+    val reconnectDone by ServerManager.reconnectDoneFlow.collectAsState()
 
     var hint by remember { mutableStateOf<String?>(null) }
     var profilesState by remember { mutableStateOf<ProfileStore.State?>(null) }
     var deleteTarget by remember { mutableStateOf<Profile?>(null) }
     var showGamePicker by remember { mutableStateOf(false) }
     var launchableApps by remember { mutableStateOf<List<AppInfo>?>(null) }
-    var pendingOverlayAction by remember { mutableStateOf<String?>(null) } // "play" | "edit" | "game:<id>"
+    var pendingOverlayAction by remember { mutableStateOf<String?>(null) } // "game:<id>"
 
     fun profileStore() = ProfileStore(ProfileStore.defaultFile(context.filesDir))
     fun reloadProfiles() {
@@ -192,20 +195,31 @@ fun HomeScreen(
         ActivationMethod.ROOT -> rootExecutor
         ActivationMethod.ADB -> AdbShellExecutor(adbManager)
     }
-    val methodLabel = when (method) {
-        ActivationMethod.SHIZUKU -> "Shizuku"
-        ActivationMethod.ROOT -> "Root"
-        ActivationMethod.ADB -> "ADB không dây"
-    }
 
     val serverRunning = serverInfo.status == ServerStatus.RUNNING
     val serverStarting = serverInfo.status == ServerStatus.STARTING
 
-    // ── Các hành động (thứ tự khai báo quan trọng: hàm gọi launcher phải
-    // đứng sau launcher, launcher gọi doLaunchGame nên doLaunchGame đứng trước) ──
+    // ── Các hành động ──
     fun startServer() {
         hint = null
         ServerManager.startServer(context, executorForMethod())
+    }
+
+    // ── Tự động khởi động Server khi mở màn chính (không còn nút bấm tay) ──
+    // Chỉ start 1 lần mỗi lần vào màn (remember reset khi rời tab): đợi kiểm
+    // tra xong Server cũ + phương thức sẵn sàng + Server đang dừng/lỗi + người
+    // dùng không vừa bấm Dừng Server. RUNNING/STARTING thì không start lại
+    // (startServer cũng chặn thêm 1 lớp). Lỗi thì KHÔNG tự thử lại vòng lặp —
+    // người dùng bấm "Thử lại" ở dòng trạng thái.
+    var autoStartTried by remember { mutableStateOf(false) }
+    LaunchedEffect(activationReady, reconnectDone, serverInfo.status) {
+        if (!autoStartTried && reconnectDone && activationReady &&
+            (serverInfo.status == ServerStatus.STOPPED || serverInfo.status == ServerStatus.ERROR) &&
+            !ServerManager.userStoppedServer
+        ) {
+            autoStartTried = true
+            startServer()
+        }
     }
 
     fun doLaunchGame(profile: Profile) {
@@ -235,7 +249,7 @@ fun HomeScreen(
         }
     }
 
-    // Xin quyền lớp phủ xong thì làm tiếp việc đang chờ.
+    // Xin quyền lớp phủ xong thì làm tiếp việc đang chờ (chỉ còn mở game).
     val overlayPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) {
@@ -247,15 +261,9 @@ fun HomeScreen(
             return@rememberLauncherForActivityResult
         }
         hint = null
-        when {
-            pending == "play" -> OverlayService.startPlay(context)
-            pending == "edit" -> {
-                profilesState?.activeId?.let { OverlayService.startEdit(context, it) }
-            }
-            pending.startsWith("game:") -> {
-                val id = pending.removePrefix("game:")
-                profilesState?.profiles?.firstOrNull { it.id == id }?.let { doLaunchGame(it) }
-            }
+        if (pending.startsWith("game:")) {
+            val id = pending.removePrefix("game:")
+            profilesState?.profiles?.firstOrNull { it.id == id }?.let { doLaunchGame(it) }
         }
     }
 
@@ -269,34 +277,9 @@ fun HomeScreen(
         overlayPermissionLauncher.launch(intent)
     }
 
-    fun startPlayOverlay() {
-        if (!OverlayService.canDrawOverlays(context)) {
-            requestOverlayPermission("play")
-            return
-        }
-        OverlayService.startPlay(context)
-    }
-
-    fun openEditor() {
-        if (!serverRunning) {
-            hint = "Khởi động Server trước đã."
-            return
-        }
-        val activeId = profilesState?.activeId
-        if (activeId == null) {
-            hint = "Chưa có profile nào."
-            return
-        }
-        if (!OverlayService.canDrawOverlays(context)) {
-            requestOverlayPermission("edit")
-            return
-        }
-        OverlayService.startEdit(context, activeId)
-    }
-
     fun launchGame(profile: Profile) {
         if (!serverRunning) {
-            hint = "Khởi động Server trước đã."
+            hint = "Server chưa sẵn sàng — đợi chút rồi thử lại."
             return
         }
         if (profile.packageName == null) {
@@ -310,120 +293,51 @@ fun HomeScreen(
         doLaunchGame(profile)
     }
 
-    fun stopKeymap() {
-        scope.launch(Dispatchers.IO) {
-            val c = ServerManager.getSavedConnection(context)
-            if (c != null) {
-                try {
-                    InputClient.setMap(c.first, c.second, false)
-                } catch (_: Exception) {
-                }
-            }
-        }
-        OverlayService.stop(context)
-    }
-
-    // ── Dòng trạng thái + nút lớn ──
-    val statusLabel: String
+    // ── Một dòng trạng thái duy nhất (không PID/UID/cổng — chỉ ghi log) ──
+    // Lỗi thì hiện 1 dòng ngắn + nút "Thử lại"; người dùng vừa bấm Dừng Server
+    // thì hiện nút "Khởi động lại" (đó là 2 trường hợp duy nhất có nút ở đây).
+    val statusText: String
     val statusColor: Color
-    val statusDetail: String
+    val statusActionLabel: String?
     when {
         overlayRunning -> {
-            statusLabel = "🟢 Đang chạy"
+            statusText = "🟢 Đang chạy"
             statusColor = Color(0xFF2E7D32)
-            statusDetail = "Keymap đang bật trong game — nút nổi K đang hiện. Bấm nút K để bật/tắt, giữ để chỉnh nút."
+            statusActionLabel = null
         }
         serverStarting -> {
-            statusLabel = "🟡 Đang khởi động Server…"
+            statusText = "🟡 Đang chuẩn bị…"
             statusColor = Color(0xFFFF9800)
-            statusDetail = "Đang đợi Server phản hồi (tối đa 30s)."
+            statusActionLabel = null
         }
         serverRunning -> {
-            statusLabel = "🟢 Đã kết nối"
+            statusText = "🟢 Sẵn sàng"
             statusColor = Color(0xFF2E7D32)
-            statusDetail = "Server đang chạy (PID ${serverInfo.pid}, UID ${serverInfo.uid}, cổng ${serverInfo.port}). " +
-                "Bấm Bắt đầu chơi để hiện nút nổi, hoặc KHỞI CHẠY game bên dưới."
+            statusActionLabel = null
         }
         serverInfo.status == ServerStatus.ERROR -> {
-            statusLabel = "🔴 Server lỗi"
+            statusText = "🔴 " + (serverInfo.errorMessage ?: "Không rõ nguyên nhân.")
             statusColor = Color(0xFFE53935)
-            statusDetail = serverInfo.errorMessage ?: "Không rõ nguyên nhân."
+            statusActionLabel = "Thử lại"
         }
-        activationReady -> {
-            statusLabel = "🟡 Đã kích hoạt — Server chưa chạy"
-            statusColor = Color(0xFFFF9800)
-            statusDetail = "$methodLabel đã sẵn sàng. Chỉ còn khởi động Server."
-        }
-        else -> {
-            statusLabel = "⚪ Chưa kích hoạt"
+        ServerManager.userStoppedServer && activationReady -> {
+            // Đã dừng tay + phương thức vẫn sẵn sàng: chỉ còn nút khởi động lại.
+            // (Chưa kích hoạt thì nhánh dưới thắng — checklist mới là việc cần làm.)
+            statusText = "⚪ Server đã dừng"
             statusColor = Color(0xFF757575)
-            statusDetail = "Làm theo checklist bên dưới để kích hoạt bằng $methodLabel."
+            statusActionLabel = "Khởi động lại"
         }
-    }
-
-    val bigLabel: String
-    val bigEnabled: Boolean
-    val bigAction: () -> Unit
-    when {
-        serverStarting -> {
-            bigLabel = "Đang khởi động…"
-            bigEnabled = false
-            bigAction = {}
-        }
-        overlayRunning -> {
-            bigLabel = "⏹ Dừng keymap"
-            bigEnabled = true
-            bigAction = { stopKeymap() }
-        }
-        serverRunning -> {
-            bigLabel = "▶ Bắt đầu chơi"
-            bigEnabled = true
-            bigAction = { startPlayOverlay() }
-        }
-        activationReady -> {
-            bigLabel = "🚀 Khởi động Server"
-            bigEnabled = true
-            bigAction = { startServer() }
-        }
-        method == ActivationMethod.SHIZUKU -> {
-            when (val s = shizukuState) {
-                is ShizukuBridge.State.NeedsPermission -> {
-                    if (s.permanentlyDenied) {
-                        bigLabel = "Mở app Shizuku để cấp quyền"
-                        bigEnabled = true
-                        bigAction = { ShizukuBridge.openShizukuApp(context) }
-                    } else {
-                        bigLabel = "Cấp quyền Shizuku"
-                        bigEnabled = true
-                        bigAction = { scope.launch { ShizukuBridge.requestPermission() } }
-                    }
-                }
-                is ShizukuBridge.State.Unsupported -> {
-                    bigLabel = "Shizuku quá cũ — cập nhật app Shizuku"
-                    bigEnabled = false
-                    bigAction = {}
-                }
-                else -> {
-                    bigLabel = if (shizukuInstalled) "Mở app Shizuku để khởi động" else "Cài app Shizuku"
-                    bigEnabled = true
-                    bigAction = { ShizukuBridge.openShizukuApp(context) }
-                }
-            }
-        }
-        method == ActivationMethod.ROOT -> {
-            bigLabel = if (rootReady == null) "Đang kiểm tra root…" else "Kiểm tra lại quyền root"
-            bigEnabled = rootReady != null
-            bigAction = {
-                scope.launch {
-                    rootReady = null
-                    rootReady = rootExecutor.reprobe()
-                }
-            }
+        !activationReady -> {
+            statusText = "⚪ Chưa kích hoạt"
+            statusColor = Color(0xFF757575)
+            statusActionLabel = null
         }
         else -> {
-            bigLabel = "Kết nối ADB không dây"
-            bigEnabled = true
-            bigAction = onOpenAdbSetup
+            // STOPPED + đã kích hoạt: đang đợi kiểm tra Server cũ xong hoặc
+            // auto-start sắp chạy.
+            statusText = "🟡 Đang chuẩn bị…"
+            statusColor = Color(0xFFFF9800)
+            statusActionLabel = null
         }
     }
 
@@ -453,148 +367,108 @@ fun HomeScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
-        // Viên trạng thái quyền (kiểu K7XD).
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            PermissionChip("LỚP PHỦ", overlayGranted) {
-                context.startActivity(
-                    Intent(
-                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                        Uri.parse("package:${context.packageName}"),
-                    ),
-                )
-            }
-            PermissionChip("THÔNG BÁO", notifGranted) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                    ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
-                    PackageManager.PERMISSION_GRANTED
-                ) {
-                    notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                } else {
-                    val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-                        putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-                    }
-                    context.startActivity(intent)
-                }
-            }
-            PermissionChip("PIN", pinGranted) {
-                try {
-                    context.startActivity(
-                        Intent(
-                            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                            Uri.parse("package:${context.packageName}"),
-                        ),
-                    )
-                } catch (_: Exception) {
-                    context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-                }
-            }
-            PermissionChip("SHIZUKU", shizukuState is ShizukuBridge.State.Ready) {
-                ShizukuBridge.openShizukuApp(context)
-            }
-        }
-
-        // Ghi chú riêng cho máy Xiaomi/HyperOS (Redmi): 2 chỗ hay quên.
-        if (Build.MANUFACTURER.equals("Xiaomi", ignoreCase = true)) {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Text(
-                        "⚠ Lưu ý cho máy Xiaomi/HyperOS",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                    )
-                    Text(
-                        "• Trong Tùy chọn nhà phát triển, bật thêm \"Gỡ lỗi USB (cài đặt bảo mật)\" " +
-                            "— thiếu thì tiêm chạm có thể âm thầm thất bại.\n" +
-                            "• Bật Tự khởi động cho KeyTouch trong Cài đặt → Ứng dụng → KeyTouch " +
-                            "(HyperOS giết app nền rất mạnh).",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-            }
-        }
-
-        // Viên trạng thái thiết bị.
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+        // Viên quyền: chỉ hiện quyền CHƯA cấp (đủ quyền thì ẩn cả hàng).
+        // Viên SHIZUKU chỉ liên quan khi dùng phương thức Shizuku.
+        val shizukuMissing = method == ActivationMethod.SHIZUKU &&
+            shizukuState !is ShizukuBridge.State.Ready
+        if (!overlayGranted || !notifGranted || !pinGranted || shizukuMissing) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "⌨️🖱️ Thiết bị đã cắm",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.weight(1f),
-                    )
-                    TextButton(onClick = { refreshDevices() }) { Text("Làm mới") }
-                }
-                if (devices.isEmpty()) {
-                    Text(
-                        "Chưa thấy chuột/bàn phím nào. Cắm qua OTG rồi đợi 1–2 giây.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else {
-                    devices.forEach { d ->
-                        Text(
-                            "• ${d.name} — " + when {
-                                d.isMouse && d.isKeyboard -> "chuột + bàn phím"
-                                d.isMouse -> "chuột"
-                                else -> "bàn phím"
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
+                if (!overlayGranted) {
+                    PermissionChip("LỚP PHỦ", false) {
+                        context.startActivity(
+                            Intent(
+                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                Uri.parse("package:${context.packageName}"),
+                            ),
                         )
                     }
                 }
+                if (!notifGranted) {
+                    PermissionChip("THÔNG BÁO", false) {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+                            PackageManager.PERMISSION_GRANTED
+                        ) {
+                            notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        } else {
+                            val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                                putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                            }
+                            context.startActivity(intent)
+                        }
+                    }
+                }
+                if (!pinGranted) {
+                    PermissionChip("PIN", false) {
+                        try {
+                            context.startActivity(
+                                Intent(
+                                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                    Uri.parse("package:${context.packageName}"),
+                                ),
+                            )
+                        } catch (_: Exception) {
+                            context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                        }
+                    }
+                }
+                if (shizukuMissing) {
+                    PermissionChip("SHIZUKU", false) {
+                        ShizukuBridge.openShizukuApp(context)
+                    }
+                }
             }
         }
 
-        // Dòng trạng thái duy nhất + nút lớn.
+        // Thiết bị cắm ngoài: chỉ hiện 1 dòng gọn khi ĐÃ cắm chuột/phím.
+        if (devices.isNotEmpty()) {
+            Text(
+                text = devices.joinToString("   ") { d ->
+                    (if (d.isMouse) "🖱 " else "⌨️ ") + d.name
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+
+        // Một dòng trạng thái duy nhất: chỉ 1 Text trong 1 Row (thẻ cũ có
+        // 2 Text label + detail; thẻ mới chỉ còn 1 chuỗi nên không còn chỗ
+        // cho 2 đoạn chữ đè nhau).
         Card(
             colors = CardDefaults.cardColors(containerColor = statusColor.copy(alpha = 0.15f)),
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+            Row(
+                modifier = Modifier.padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
+                if (serverStarting) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        color = statusColor,
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                }
                 Text(
-                    text = statusLabel,
+                    text = statusText,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     color = statusColor,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
-                Text(text = statusDetail, style = MaterialTheme.typography.bodyMedium)
+                if (statusActionLabel != null) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    OutlinedButton(onClick = { startServer() }) { Text(statusActionLabel) }
+                }
             }
-        }
-
-        Button(
-            onClick = bigAction,
-            enabled = bigEnabled,
-            colors = if (overlayRunning) {
-                ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-            } else {
-                ButtonDefaults.buttonColors()
-            },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(54.dp),
-        ) {
-            if (serverStarting) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(20.dp),
-                    color = Color.White,
-                    strokeWidth = 2.dp,
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-            }
-            Text(bigLabel, fontSize = 16.sp, fontWeight = FontWeight.Bold)
         }
 
         // Chi tiết lỗi Server khi khởi động thất bại: giai đoạn bị kẹt +
@@ -639,30 +513,25 @@ fun HomeScreen(
             Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
         }
 
-        // Checklist kích hoạt (chỉ hiện khi chưa xong).
-        if (!activationReady || !serverRunning) {
-            ActivationChecklist(
-                method = method,
-                shizukuState = shizukuState,
-                shizukuInstalled = shizukuInstalled,
-                rootReady = rootReady,
-                adbConnected = connState == ConnectionState.CONNECTED,
-                serverRunning = serverRunning,
-                serverStarting = serverStarting,
-                onOpenShizuku = { ShizukuBridge.openShizukuApp(context) },
-                onRequestShizukuPermission = {
-                    scope.launch { ShizukuBridge.requestPermission() }
-                },
-                onReprobeRoot = {
-                    scope.launch {
-                        rootReady = null
-                        rootReady = rootExecutor.reprobe()
-                    }
-                },
-                onOpenAdbSetup = onOpenAdbSetup,
-                onStartServer = { startServer() },
-            )
-        }
+        // Checklist kích hoạt: tự ẩn khi không còn bước nào chưa xong.
+        ActivationChecklist(
+            method = method,
+            shizukuState = shizukuState,
+            shizukuInstalled = shizukuInstalled,
+            rootReady = rootReady,
+            adbConnected = connState == ConnectionState.CONNECTED,
+            onOpenShizuku = { ShizukuBridge.openShizukuApp(context) },
+            onRequestShizukuPermission = {
+                scope.launch { ShizukuBridge.requestPermission() }
+            },
+            onReprobeRoot = {
+                scope.launch {
+                    rootReady = null
+                    rootReady = rootExecutor.reprobe()
+                }
+            },
+            onOpenAdbSetup = onOpenAdbSetup,
+        )
 
         // Danh sách game.
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -726,46 +595,6 @@ fun HomeScreen(
                 }
             }
         }
-        if (!serverRunning) {
-            Text(
-                "Cần khởi động Server trước mới KHỞI CHẠY được game.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        TextButton(onClick = onGoToProfiles) {
-            Text("Quản lý profile, độ nhạy, phím bật/tắt →")
-        }
-
-        // Chỉnh nút + chế độ thử.
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Button(
-                onClick = { openEditor() },
-                enabled = serverRunning,
-                modifier = Modifier.weight(1f),
-            ) { Text("✏️ Chỉnh nút", fontSize = 13.sp) }
-            Button(
-                onClick = onOpenInputTest,
-                enabled = serverRunning,
-                modifier = Modifier.weight(1f),
-            ) { Text("⌨️ Thử phím", fontSize = 13.sp) }
-            Button(
-                onClick = onOpenTouchTest,
-                enabled = serverRunning,
-                modifier = Modifier.weight(1f),
-            ) { Text("👆 Thử cảm ứng", fontSize = 13.sp) }
-        }
-        Text(
-            "Trong game: bấm nút nổi K để bật/tắt keymap, giữ nút K để mở trình sửa, " +
-                "kéo nút K để di chuyển. Phím F8 trên bàn phím USB bật/tắt keymap, " +
-                "F9 chuyển chế độ con trỏ (bấm giao diện game) ↔ nhìn tự do (kéo camera). " +
-                "Đổi phím trong tab Cấu hình.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
         Spacer(modifier = Modifier.height(8.dp))
     }
 
@@ -919,8 +748,10 @@ private fun isIgnoringBatteryOptimizations(context: Context): Boolean {
 // AppInfo + queryLaunchableApps dùng chung bản ở ProfileScreen.kt (cùng package ui).
 
 /**
- * Checklist kích hoạt từng bước có dấu ✓ (kiểu GG Mouse Pro). Chỉ nút của
- * bước chưa xong ĐẦU TIÊN được bấm — các bước sau chờ bước trước xong.
+ * Checklist kích hoạt (kiểu GG Mouse Pro): CHỈ hiện các bước chưa xong,
+ * xong hết thì tự ẩn cả thẻ. Không còn bước "Khởi động Server" — Server
+ * tự chạy ngầm, trạng thái của nó nằm ở dòng trạng thái trên màn chính.
+ * Chỉ nút của bước chưa xong ĐẦU TIÊN được bấm.
  */
 @Composable
 private fun ActivationChecklist(
@@ -929,13 +760,10 @@ private fun ActivationChecklist(
     shizukuInstalled: Boolean,
     rootReady: Boolean?,
     adbConnected: Boolean,
-    serverRunning: Boolean,
-    serverStarting: Boolean,
     onOpenShizuku: () -> Unit,
     onRequestShizukuPermission: () -> Unit,
     onReprobeRoot: () -> Unit,
     onOpenAdbSetup: () -> Unit,
-    onStartServer: () -> Unit,
 ) {
     data class Step(val text: String, val done: Boolean, val actionLabel: String?, val action: (() -> Unit)?)
 
@@ -957,19 +785,18 @@ private fun ActivationChecklist(
                     if (permDenied) "Mở Shizuku để cấp tay" else "Cấp quyền",
                     if (permDenied) onOpenShizuku else onRequestShizukuPermission,
                 ),
-                Step("Khởi động Server", serverRunning, "Khởi động Server", onStartServer),
             )
         }
         ActivationMethod.ROOT -> listOf(
             Step("Cấp quyền root cho KeyTouch", rootReady == true, "Kiểm tra lại", onReprobeRoot),
-            Step("Khởi động Server", serverRunning, "Khởi động Server", onStartServer),
         )
         ActivationMethod.ADB -> listOf(
             Step("Ghép cặp + kết nối ADB không dây", adbConnected, "Mở cài đặt ADB", onOpenAdbSetup),
-            Step("Khởi động Server", serverRunning, "Khởi động Server", onStartServer),
         )
     }
-    val firstPending = steps.indexOfFirst { !it.done }
+    // Chỉ hiện bước chưa xong; xong hết thì ẩn cả thẻ.
+    val pending = steps.filter { !it.done }
+    if (pending.isEmpty()) return
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -981,19 +808,19 @@ private fun ActivationChecklist(
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
             )
-            steps.forEachIndexed { i, step ->
+            pending.forEachIndexed { i, step ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
                         modifier = Modifier
                             .size(26.dp)
                             .background(
-                                if (step.done) Color(0xFF2E7D32) else Color(0xFF9E9E9E),
+                                Color(0xFF9E9E9E),
                                 RoundedCornerShape(13.dp),
                             ),
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
-                            text = if (step.done) "✓" else "${i + 1}",
+                            text = "${i + 1}",
                             color = Color.White,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
@@ -1003,17 +830,11 @@ private fun ActivationChecklist(
                     Text(
                         text = step.text,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = if (step.done) {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
-                        },
                         modifier = Modifier.weight(1f),
                     )
-                    if (!step.done && i == firstPending && step.actionLabel != null) {
+                    if (i == 0 && step.actionLabel != null) {
                         OutlinedButton(
                             onClick = { step.action?.invoke() },
-                            enabled = !serverStarting,
                         ) { Text(step.actionLabel, fontSize = 13.sp) }
                     }
                 }

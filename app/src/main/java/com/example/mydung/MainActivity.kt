@@ -77,10 +77,9 @@ fun getWifiIpAddress(context: Context): String {
  * Khung app mới: thanh điều hướng dưới 3 tab (kiểu K7XD) + các màn con
  * toàn màn hình (thử phím / thử cảm ứng / cài đặt ADB).
  *
- * - Tab Game: màn hình chính (quyền, thiết bị, trạng thái + nút lớn,
- *   checklist kích hoạt, danh sách game).
+ * - Tab Game: màn hình chính tối giản (1 dòng trạng thái + danh sách game).
  * - Tab Cấu hình: quản lý profile (độ nhạy, phím bật/tắt MAP, gán game).
- * - Tab Cài đặt: phương thức kích hoạt, cách tiêm, Server, nhật ký.
+ * - Tab Cài đặt: phương thức kích hoạt, cách tiêm, Server, kiểm tra, nhật ký.
  */
 @Composable
 fun KeyTouchApp() {
@@ -138,16 +137,15 @@ fun KeyTouchApp() {
             when (tab) {
                 0 -> HomeScreen(
                     method = method,
-                    onOpenInputTest = { showInputTest = true },
-                    onOpenTouchTest = { showTouchTest = true },
                     onOpenAdbSetup = { showAdbSetup = true },
-                    onGoToProfiles = { tab = 1 },
                 )
                 1 -> ProfileScreen(onBack = {}, showBack = false)
                 else -> SettingsScreen(
                     method = method,
                     onMethodChange = { method = it },
                     onOpenAdbSetup = { showAdbSetup = true },
+                    onOpenInputTest = { showInputTest = true },
+                    onOpenTouchTest = { showTouchTest = true },
                 )
             }
         }
