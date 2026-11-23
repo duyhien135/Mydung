@@ -64,34 +64,108 @@ class ReflectiveEvdevCapsIoctl : EvdevCapsIoctl {
     @Synchronized
     override fun resolve() {
         if (resolved) return
-        resolved = true
-        val attempts = listOf(
-            "lc-mut" to { libcoreIoctl("libcore.util.MutableInt") },
-            "lc-i32" to { libcoreIoctl("libcore.io.Int32Ref") },
-            "os-mut" to { staticOsIoctl("libcore.util.MutableInt") },
-            "os-i32" to { staticOsIoctl("libcore.io.Int32Ref") },
+        resolveWithAttempts(
+            listOf(
+                "lc-mut" to { libcoreIoctl("libcore.util.MutableInt") },
+                "lc-i32" to { libcoreIoctl("libcore.io.Int32Ref") },
+                "os-mut" to { staticOsIoctl("libcore.util.MutableInt") },
+                "os-i32" to { staticOsIoctl("libcore.io.Int32Ref") },
+            ),
         )
+    }
+
+    /**
+     * Chọn strategy từ danh sách attempt cho trước. resolve() gọi hàm
+     * này với 4 attempt reflection thật; test gọi trực tiếp với attempt
+     * giả để kiểm chứng logic chọn phương án "chưa kiểm chứng".
+     * Production KHÔNG gọi trực tiếp — dùng resolve().
+     *
+     * Luật chọn (build-14, sửa theo Claude): ưu tiên strategy đầu tiên
+     * vượt qua kiểm chứng fd=-1 (không ném, hoặc ném lỗi errno như
+     * EBADF — chứng tỏ hàm gọi được tới kernel). Nếu KHÔNG strategy
+     * nào vượt qua kiểm chứng, giữ strategy đầu tiên có lỗi MƠ HỒ
+     * (không phải lỗi cấu trúc) làm phương án cuối "chưa kiểm chứng"
+     * (strategyName = tên + "?") — kiểm chứng fd giả có thể loại oan
+     * trên ROM lạ (ném lỗi khác EBADF), trong khi ioctl thật trên fd
+     * thiết bị vẫn có thể chạy được. Lỗi CẤU TRÚC (sai chữ ký, thiếu
+     * method/field/class) đã chứng minh gọi sai nên bị loại khỏi ứng
+     * viên. Chỉ trả "none" khi không còn ứng viên nào.
+     */
+    @Synchronized
+    fun resolveWithAttempts(attempts: List<Pair<String, () -> (FileDescriptor, Int) -> Int>>) {
+        resolved = true
         val failures = ArrayList<String>()
+        var firstCandidate: Pair<String, (FileDescriptor, Int) -> Int>? = null
         for ((name, attempt) in attempts) {
-            try {
-                val fn = attempt()
-                try {
-                    fn(FileDescriptor(), Config.EVIOCGBIT_EV)
-                } catch (e: Exception) {
-                    if (extractErrno(e) == null) throw e
-                }
+            val fn = try {
+                attempt()
+            } catch (e: Exception) {
+                failures.add("$name: ${e.javaClass.simpleName} (build)")
+                continue
+            } catch (e: Error) {
+                failures.add("$name: ${e.javaClass.simpleName} (build)")
+                continue
+            }
+            // Invoker xây được — kiểm chứng bằng fd không hợp lệ.
+            val verifyError: Throwable? = try {
+                fn(FileDescriptor(), Config.EVIOCGBIT_EV)
+                null
+            } catch (e: Exception) {
+                e
+            } catch (e: Error) {
+                e
+            }
+            if (verifyError == null || extractErrno(verifyError) != null) {
+                // Không ném, hoặc ném lỗi errno (vd EBADF) — gọi được tới kernel.
                 invoker = fn
                 strategyName = name
                 Server.log("EVIOCGBIT: dùng ioctl dạng $name.")
                 return
-            } catch (e: Exception) {
-                failures.add("$name: ${e.javaClass.simpleName}")
-            } catch (e: Error) {
-                failures.add("$name: ${e.javaClass.simpleName}")
             }
+            if (isStructuralError(verifyError)) {
+                // Lỗi cấu trúc — đã chứng minh gọi sai, gọi trên fd thật
+                // cũng lỗi y hệt nên loại khỏi ứng viên "chưa kiểm chứng".
+                failures.add("$name: ${verifyError.javaClass.simpleName} (structural)")
+                continue
+            }
+            // Lỗi mơ hồ — giữ làm ứng viên "chưa kiểm chứng" (chỉ lấy đầu tiên).
+            if (firstCandidate == null) firstCandidate = name to fn
+            failures.add("$name: ${verifyError.javaClass.simpleName}")
         }
-        strategyName = "none"
-        Server.log("EVIOCGBIT: không dò được ioctl nào (${failures.joinToString(", ")}) -> không phân loại bằng EVIOCGBIT.")
+        val fallback = firstCandidate
+        if (fallback != null) {
+            invoker = fallback.second
+            strategyName = fallback.first + "?"
+            Server.log(
+                "EVIOCGBIT: không strategy nào vượt qua kiểm chứng fd=-1 " +
+                    "(${failures.joinToString(", ")}) -> dùng ${fallback.first} chưa kiểm chứng.",
+            )
+        } else {
+            strategyName = "none"
+            Server.log("EVIOCGBIT: không dò được ioctl nào (${failures.joinToString(", ")}) -> không phân loại bằng EVIOCGBIT.")
+        }
+    }
+
+    /**
+     * Lỗi cấu trúc khi gọi thử: sai chữ ký/thiếu method/field/class —
+     * gọi trên fd thật cũng lỗi y hệt nên không được làm ứng viên
+     * "chưa kiểm chứng". Kiểm tra cả chuỗi cause (reflection bọc lỗi
+     * thật trong InvocationTargetException).
+     */
+    private fun isStructuralError(e: Throwable): Boolean {
+        var t: Throwable? = e
+        while (t != null) {
+            when (t) {
+                is IllegalArgumentException,
+                is ClassCastException,
+                is NoSuchMethodError,
+                is AbstractMethodError,
+                is NoSuchFieldError,
+                is NoClassDefFoundError -> return true
+            }
+            t = t.cause
+        }
+        return false
     }
 
     override fun ioctlIntValue(fd: FileDescriptor, cmd: Int): Int? {
@@ -165,7 +239,12 @@ object EvdevCaps {
         backend = ReflectiveEvdevCapsIoctl()
     }
 
-    /** Tên strategy đang dùng ("lc-mut", "lc-i32", "os-mut", "os-i32", "none"...). */
+    /**
+     * Tên strategy đang dùng ("lc-mut", "lc-i32", "os-mut", "os-i32",
+     * "none"...). Hậu tố "?" = phương án chưa kiểm chứng (build-14:
+     * không strategy nào vượt qua kiểm chứng fd=-1, giữ strategy đầu
+     * tiên resolve được làm phương án cuối).
+     */
     val strategyName: String
         get() = backend.strategyName
 

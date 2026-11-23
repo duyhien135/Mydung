@@ -1,9 +1,13 @@
 package com.example.mydung.server
 
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import java.io.File
 import java.io.FileDescriptor
 
 /**
@@ -124,7 +128,41 @@ class ScanDiagnosticsTest {
             procReadOk = true, procBlocks = 12, parsedCount = 2, nodesOnDisk = 12,
             fallbackClassified = 1, openFailed = 0, openedCount = 3,
         )
-        assertEquals("proc:12_parsed:2_nodes:12_open:3_err:0_fb:1", d.token())
+        // 6 trường đầu giữ nguyên build-13, thêm _pf/_io/_sf/_st (build-14).
+        assertEquals(
+            "proc:12_parsed:2_nodes:12_open:3_err:0_fb:1_pf:0_io:0_sf:0_st:none",
+            d.token(),
+        )
+    }
+
+    @Test
+    fun token_extendedFields() {
+        // Trường hợp Redmi build-13: proc:ERR, fb:0 — build-14 thêm pf/io/sf/st
+        // để biết kẹt ở mở node, ioctl hay phân loại.
+        val d = ScanDiagnostics(
+            procReadOk = false, parsedCount = 0, nodesOnDisk = 7,
+            fallbackClassified = 0, openFailed = 0, openedCount = 0,
+            probeOpenFailed = 3, ioctlAvailable = true, sysfsClassified = 0,
+            strategyName = "lc-mut?",
+        )
+        assertEquals(
+            "proc:ERR_parsed:0_nodes:7_open:0_err:0_fb:0_pf:3_io:1_sf:0_st:lc-mut?",
+            d.token(),
+        )
+    }
+
+    @Test
+    fun token_sysfsClassified() {
+        val d = ScanDiagnostics(
+            procReadOk = false, parsedCount = 0, nodesOnDisk = 7,
+            fallbackClassified = 1, openFailed = 0, openedCount = 1,
+            probeOpenFailed = 0, ioctlAvailable = false, sysfsClassified = 1,
+            strategyName = "none",
+        )
+        assertEquals(
+            "proc:ERR_parsed:0_nodes:7_open:1_err:0_fb:1_pf:0_io:0_sf:1_st:none",
+            d.token(),
+        )
     }
 
     @Test
@@ -140,8 +178,232 @@ class ScanDiagnosticsTest {
         val d = ScanDiagnostics(
             procReadOk = true, procBlocks = 5, parsedCount = 0, nodesOnDisk = 9,
             fallbackClassified = 0, openFailed = 2, lastOpenError = "event5: Permission denied",
-            openedCount = 0,
+            openedCount = 0, probeOpenFailed = 1, ioctlAvailable = true,
+            sysfsClassified = 0, strategyName = "lc-mut?",
         )
         assertTrue(!d.token().contains(' '))
+    }
+}
+
+/**
+ * Test phân loại bằng sysfs (build-14, đường chính thay EVIOCGBIT).
+ * Dùng cây sysfs giả trong thư mục tạm (không có /sys trên máy test).
+ */
+class SysfsCapsTest {
+
+    @get:Rule
+    val tmp = TemporaryFolder()
+
+    @After
+    fun restoreRoot() {
+        SysfsCaps.inputRoot = "/sys/class/input"
+    }
+
+    /** Tạo 1 node giả: root/eventN/device/capabilities/{ev,key,rel,abs} + name. */
+    private fun fakeNode(
+        eventId: String,
+        ev: String?, key: String?, rel: String?, abs: String?,
+        name: String?,
+    ) {
+        val dir = File(tmp.root, "$eventId/device/capabilities").apply { mkdirs() }
+        if (ev != null) File(dir, "ev").writeText(ev)
+        if (key != null) File(dir, "key").writeText(key)
+        if (rel != null) File(dir, "rel").writeText(rel)
+        if (abs != null) File(dir, "abs").writeText(abs)
+        if (name != null) File(tmp.root, "$eventId/device/name").writeText(name)
+        SysfsCaps.inputRoot = tmp.root.absolutePath
+    }
+
+    @Test
+    fun parseMask_singleWord() {
+        assertEquals(0x7, SysfsCaps.parseMaskWord0("7"))
+        assertEquals(0x120013, SysfsCaps.parseMaskWord0("120013"))
+        assertEquals(0x7, SysfsCaps.parseMaskWord0("  7\n"))
+    }
+
+    @Test
+    fun parseMask_multiWord_lastIsWord0() {
+        // Từ cao nhất đứng trước — từ cuối là word 0 (vd key bàn phím thật).
+        assertEquals(
+            0xfffffffe.toInt(),
+            SysfsCaps.parseMaskWord0("7 ff9f387acb60ff febeffdfffefffff fffffffffffffffe"),
+        )
+    }
+
+    @Test
+    fun parseMask_invalid_returnsNull() {
+        assertNull(SysfsCaps.parseMaskWord0(""))
+        assertNull(SysfsCaps.parseMaskWord0("   "))
+        assertNull(SysfsCaps.parseMaskWord0("xyz"))
+        // Từ dài hơn 64 bit (17 ký tự hex) thì không parse.
+        assertNull(SysfsCaps.parseMaskWord0("1ffffffffffffffff"))
+    }
+
+    @Test
+    fun parseMask_fullWord() {
+        assertEquals(-1, SysfsCaps.parseMaskWord0("ffffffffffffffff"))
+        assertEquals(-1, SysfsCaps.parseMaskWord0("FFFFFFFFFFFFFFFF"))
+    }
+
+    @Test
+    fun probe_mouse() {
+        // Chuột: EV_SYN|EV_KEY|EV_REL, REL_X|REL_Y|REL_WHEEL.
+        fakeNode("event5", ev = "7", key = "0", rel = "103", abs = "0", name = "VXE R1 SE+")
+        val r = SysfsCaps.probe("event5")
+        assertTrue(r is SysfsCaps.SysfsProbe.Read)
+        val read = r as SysfsCaps.SysfsProbe.Read
+        assertEquals(DeviceKind.MOUSE, read.kind)
+        assertEquals("VXE R1 SE+", read.name)
+    }
+
+    @Test
+    fun probe_keyboard_realMasks() {
+        // Bàn phím với mask như trên máy thật (ev + key nhiều từ).
+        fakeNode(
+            "event3", ev = "120013",
+            key = "7 ff9f387acb60ff febeffdfffefffff fffffffffffffffe",
+            rel = "0", abs = "0", name = "USB Keyboard",
+        )
+        val r = SysfsCaps.probe("event3")
+        assertTrue(r is SysfsCaps.SysfsProbe.Read)
+        assertEquals(DeviceKind.KEYBOARD, (r as SysfsCaps.SysfsProbe.Read).kind)
+    }
+
+    @Test
+    fun probe_touch_returnsNullKind() {
+        // Cảm ứng: EV_SYN|EV_KEY|EV_ABS, không REL, không phím chữ -> null
+        // (tên trung tính để test đúng luật classify, không phải lọc tên).
+        fakeNode("event1", ev = "b", key = "0", rel = "0", abs = "1000000", name = "ABS Device")
+        val r = SysfsCaps.probe("event1")
+        assertTrue(r is SysfsCaps.SysfsProbe.Read)
+        assertNull((r as SysfsCaps.SysfsProbe.Read).kind)
+    }
+
+    @Test
+    fun probe_powerKey_returnsNullKind() {
+        // Nút nguồn: EV_KEY nhưng word0 = 0 (KEY_POWER ở word 1) -> null.
+        fakeNode("event2", ev = "3", key = "0", rel = "0", abs = "0", name = "Button Device")
+        val r = SysfsCaps.probe("event2")
+        assertTrue(r is SysfsCaps.SysfsProbe.Read)
+        assertNull((r as SysfsCaps.SysfsProbe.Read).kind)
+    }
+
+    @Test
+    fun probe_internalName_returnsNullKind() {
+        // Mask chuột nhưng tên nội bộ (cảm ứng) -> loại.
+        fakeNode("event4", ev = "7", key = "0", rel = "103", abs = "0", name = "fts_touch")
+        val r = SysfsCaps.probe("event4")
+        assertTrue(r is SysfsCaps.SysfsProbe.Read)
+        assertNull((r as SysfsCaps.SysfsProbe.Read).kind)
+    }
+
+    @Test
+    fun probe_missingNode_returnsUnreadable() {
+        SysfsCaps.inputRoot = tmp.root.absolutePath
+        assertEquals(SysfsCaps.SysfsProbe.Unreadable, SysfsCaps.probe("event9"))
+    }
+
+    @Test
+    fun probe_partialMasks_returnsUnreadable() {
+        // Thiếu file key -> không đọc đủ mask -> Unreadable (để rớt xuống EVIOCGBIT).
+        fakeNode("event6", ev = "7", key = null, rel = "103", abs = "0", name = "VXE R1 SE+")
+        assertEquals(SysfsCaps.SysfsProbe.Unreadable, SysfsCaps.probe("event6"))
+    }
+}
+
+/**
+ * Test luật chọn strategy EVIOCGBIT (build-14): không strategy nào vượt
+ * qua kiểm chứng fd=-1 thì giữ strategy đầu tiên có lỗi MƠ HỒ làm phương
+ * án cuối "chưa kiểm chứng" (tên + "?") thay vì trả "none". Lỗi CẤU TRÚC
+ * (sai chữ ký...) bị loại khỏi ứng viên (sửa theo Claude).
+ */
+class ReflectiveEvdevCapsIoctlTest {
+
+    @Test
+    fun verifiedStrategy_noQuestionMark() {
+        // Invoker chạy ngon trên fd giả (không ném) -> kiểm chứng qua.
+        val ioctl = ReflectiveEvdevCapsIoctl()
+        ioctl.resolveWithAttempts(
+            listOf("fake-a" to { { _: FileDescriptor, _: Int -> 42 } }),
+        )
+        assertEquals("fake-a", ioctl.strategyName)
+        assertEquals(42, ioctl.ioctlIntValue(FileDescriptor(), Config.EVIOCGBIT_EV))
+    }
+
+    @Test
+    fun unverifiedFallback_keepsFirstResolved() {
+        // Strategy đầu resolve được nhưng kiểm chứng ném lỗi không có
+        // errno (ROM lạ ném lỗi khác EBADF); strategy sau không resolve
+        // được. -> Giữ strategy đầu, tên + "?"; ioctl thật vẫn gọi được.
+        var calls = 0
+        val invoker: (FileDescriptor, Int) -> Int = { _, _ ->
+            calls++
+            if (calls == 1) throw RuntimeException("not EBADF") else 42
+        }
+        val ioctl = ReflectiveEvdevCapsIoctl()
+        ioctl.resolveWithAttempts(
+            listOf(
+                "fake-a" to { invoker },
+                "fake-b" to { throw IllegalStateException("no class") },
+            ),
+        )
+        assertEquals("fake-a?", ioctl.strategyName)
+        assertEquals(42, ioctl.ioctlIntValue(FileDescriptor(), Config.EVIOCGBIT_EV))
+    }
+
+    @Test
+    fun nothingResolved_returnsNone() {
+        val ioctl = ReflectiveEvdevCapsIoctl()
+        ioctl.resolveWithAttempts(
+            listOf("fake-a" to { throw IllegalStateException("no class") }),
+        )
+        assertEquals("none", ioctl.strategyName)
+        assertNull(ioctl.ioctlIntValue(FileDescriptor(), Config.EVIOCGBIT_EV))
+    }
+
+    @Test
+    fun secondStrategyVerified_whenFirstFailsBuild() {
+        // Strategy đầu không resolve được, strategy sau kiểm chứng qua
+        // -> chọn strategy sau (không "?").
+        val ioctl = ReflectiveEvdevCapsIoctl()
+        ioctl.resolveWithAttempts(
+            listOf(
+                "fake-a" to { throw IllegalStateException("no class") },
+                "fake-b" to { { _: FileDescriptor, _: Int -> 7 } },
+            ),
+        )
+        assertEquals("fake-b", ioctl.strategyName)
+        assertEquals(7, ioctl.ioctlIntValue(FileDescriptor(), Config.EVIOCGBIT_EV))
+    }
+
+    @Test
+    fun structuralError_excludedFromFallback() {
+        // Cả 2 strategy đều ném lỗi cấu trúc khi kiểm chứng (sai chữ
+        // ký / thiếu method) -> không có ứng viên "chưa kiểm chứng"
+        // -> "none", chứ không chọn bừa 1 cái đã chứng minh gọi sai.
+        val ioctl = ReflectiveEvdevCapsIoctl()
+        ioctl.resolveWithAttempts(
+            listOf(
+                "fake-a" to { { _: FileDescriptor, _: Int -> throw IllegalArgumentException("bad arg") } },
+                "fake-b" to { { _: FileDescriptor, _: Int -> throw NoSuchMethodError("no method") } },
+            ),
+        )
+        assertEquals("none", ioctl.strategyName)
+        assertNull(ioctl.ioctlIntValue(FileDescriptor(), Config.EVIOCGBIT_EV))
+    }
+
+    @Test
+    fun ambiguousAfterStructural_becomesCandidate() {
+        // Strategy đầu lỗi cấu trúc (loại), strategy sau lỗi mơ hồ
+        // (RuntimeException, không phải lỗi cấu trúc) -> giữ strategy
+        // sau làm "chưa kiểm chứng".
+        val ioctl = ReflectiveEvdevCapsIoctl()
+        ioctl.resolveWithAttempts(
+            listOf(
+                "fake-a" to { { _: FileDescriptor, _: Int -> throw IllegalArgumentException("bad arg") } },
+                "fake-b" to { { _: FileDescriptor, _: Int -> throw RuntimeException("ambiguous") } },
+            ),
+        )
+        assertEquals("fake-b?", ioctl.strategyName)
     }
 }

@@ -22,7 +22,7 @@ data class ScanDiagnostics(
     val parsedCount: Int = 0,
     /** Số node event* trên đĩa (/dev/input). */
     val nodesOnDisk: Int = 0,
-    /** Lần quét này có thử fallback EVIOCGBIT không. */
+    /** Lần quét này có thử fallback (sysfs/EVIOCGBIT) không. */
     val fallbackUsed: Boolean = false,
     /** Số thiết bị fallback phân loại được ở lần quét này. */
     val fallbackClassified: Int = 0,
@@ -32,8 +32,21 @@ data class ScanDiagnostics(
     val lastOpenError: String = "",
     /** Số thiết bị đang mở được (reader đang sống). */
     val openedCount: Int = 0,
+    /** Số lần probe fallback mở FileInputStream lỗi (đường EVIOCGBIT — build-14). */
+    val probeOpenFailed: Int = 0,
+    /** EVIOCGBIT probe dùng được không (đã dò được ioctl — build-14). */
+    val ioctlAvailable: Boolean = false,
+    /** Số thiết bị phân loại được bằng sysfs ở lần quét này (build-14). */
+    val sysfsClassified: Int = 0,
+    /** Tên strategy EVIOCGBIT đang dùng ("lc-mut", "none", "lc-mut?" = chưa kiểm chứng — build-14). */
+    val strategyName: String = "none",
 ) {
-    /** Token 1 từ cho MAPSTATUS diag= (không chứa khoảng trắng). */
+    /**
+     * Token 1 từ cho MAPSTATUS diag= (không chứa khoảng trắng).
+     * 6 trường đầu giữ nguyên build-13 (proc/parsed/nodes/open/err/fb);
+     * build-14 thêm pf (probe mở lỗi), io (ioctl dùng được 1/0), sf
+     * (sysfs phân loại được), st (strategy, "?" = chưa kiểm chứng).
+     */
     fun token(): String {
         val proc = if (procReadOk) "$procBlocks" else "ERR"
         return "proc:$proc" +
@@ -41,7 +54,11 @@ data class ScanDiagnostics(
             "_nodes:$nodesOnDisk" +
             "_open:$openedCount" +
             "_err:$openFailed" +
-            "_fb:$fallbackClassified"
+            "_fb:$fallbackClassified" +
+            "_pf:$probeOpenFailed" +
+            "_io:${if (ioctlAvailable) 1 else 0}" +
+            "_sf:$sysfsClassified" +
+            "_st:$strategyName"
     }
 }
 
@@ -59,6 +76,10 @@ data class ScanDiagnostics(
  * fallback liệt kê trực tiếp /dev/input/event* + phân loại bằng
  * EVIOCGBIT (kiến trúc GG Mouse Pro 3, xem EvdevCaps) — bắt được chuột/
  * phím mà classify /proc bỏ sót (thiếu BTN_LEFT, thiếu handler kbd...).
+ * Build-14: sysfs là đường phân loại CHÍNH của fallback (xem SysfsCaps
+ * — chỉ đọc file text, không cần ioctl/mở node), EVIOCGBIT chỉ là dự
+ * phòng khi sysfs đọc lỗi (trên Redmi HyperOS, /proc đọc lỗi proc:ERR
+ * và EVIOCGBIT cũng phân loại được 0 node).
  * Mỗi lần quét ghi chẩn đoán chi tiết vào log + [ScanDiagnostics].
  */
 class DeviceScanner(
@@ -229,6 +250,8 @@ class DeviceScanner(
         var lastOpenError = ""
         var fallbackUsed = false
         var fallbackClassified = 0
+        var sysfsClassified = 0
+        var probeOpenFailed = 0
         var opened = 0
         val added = ArrayList<InputDeviceInfo>()
         synchronized(lock) {
@@ -271,33 +294,36 @@ class DeviceScanner(
                 }
             }
             // 3. Fallback: node trên đĩa mà /proc không phân loại được ->
-            // thử mở + phân loại bằng EVIOCGBIT (kiến trúc GG Mouse Pro 3).
-            // Chỉ thử node chưa mở, chưa có trong /proc, và chưa bị loại
-            // gần đây (throttle 30s). Không dò được ioctl thì bỏ qua.
-            if (EvdevCaps.isProbingAvailable()) {
-                val nowMs = System.currentTimeMillis()
-                for (node in diskNodes) {
-                    val id = node.name
-                    if (id in readers || id in foundIds) continue
-                    val lastTry = rejectedFallback[id] ?: 0L
-                    if (nowMs - lastTry < Config.FALLBACK_REPROBE_MS) continue
-                    fallbackUsed = true
-                    rejectedFallback[id] = nowMs
-                    val info = probeFallbackNode(node)
-                    if (info == null) continue
-                    rejectedFallback.remove(id)
-                    val reader = DeviceReader(info, onEvent)
-                    if (reader.open()) {
-                        readers[id] = reader
-                        reader.start()
-                        onEvent(InputEvent.Device(true, info))
-                        Server.log("Thiết bị mới (fallback EVIOCGBIT): ${info.name} (${info.node}, ${info.kind})")
-                        added.add(info)
-                        fallbackClassified++
-                    } else {
-                        openFailed++
-                        reader.lastOpenError?.let { lastOpenError = "${info.node}: $it" }
-                    }
+            // thử sysfs TRƯỚC (build-14, đường chính — không cần ioctl,
+            // không cần mở node), chỉ khi sysfs đọc lỗi mới thử
+            // EVIOCGBIT (kiến trúc GG Mouse Pro 3). Chỉ thử node chưa
+            // mở, chưa có trong /proc, và chưa bị loại gần đây
+            // (throttle 30s). Sysfs đọc được là đủ kết luận (chuột/
+            // phím hay không) — không thử ioctl nữa.
+            val nowMs = System.currentTimeMillis()
+            for (node in diskNodes) {
+                val id = node.name
+                if (id in readers || id in foundIds) continue
+                val lastTry = rejectedFallback[id] ?: 0L
+                if (nowMs - lastTry < Config.FALLBACK_REPROBE_MS) continue
+                fallbackUsed = true
+                rejectedFallback[id] = nowMs
+                val probe = probeFallbackNode(node)
+                if (probe.openFailed) probeOpenFailed++
+                val info = probe.info ?: continue
+                rejectedFallback.remove(id)
+                val reader = DeviceReader(info, onEvent)
+                if (reader.open()) {
+                    readers[id] = reader
+                    reader.start()
+                    onEvent(InputEvent.Device(true, info))
+                    Server.log("Thiết bị mới (fallback ${if (probe.viaSysfs) "sysfs" else "EVIOCGBIT"}): ${info.name} (${info.node}, ${info.kind})")
+                    added.add(info)
+                    fallbackClassified++
+                    if (probe.viaSysfs) sysfsClassified++
+                } else {
+                    openFailed++
+                    reader.lastOpenError?.let { lastOpenError = "${info.node}: $it" }
                 }
             }
             // Dọn danh sách loại cho node đã biến mất khỏi đĩa.
@@ -305,6 +331,8 @@ class DeviceScanner(
             opened = readers.size
         }
         // 4. Cập nhật chẩn đoán + log tóm tắt khi số liệu đổi.
+        val ioctlAvailable = EvdevCaps.isProbingAvailable()
+        val strategyName = EvdevCaps.strategyName
         lastDiagnostics = ScanDiagnostics(
             procReadOk = procReadOk,
             procBlocks = procBlocks,
@@ -315,47 +343,90 @@ class DeviceScanner(
             openFailed = openFailed,
             lastOpenError = lastOpenError,
             openedCount = opened,
+            probeOpenFailed = probeOpenFailed,
+            ioctlAvailable = ioctlAvailable,
+            sysfsClassified = sysfsClassified,
+            strategyName = strategyName,
         )
-        logScanSummary(procReadOk, procBlocks, parsed.size, diskNodes.size, opened, openFailed, lastOpenError, fallbackClassified)
+        logScanSummary(procReadOk, procBlocks, parsed.size, diskNodes.size, opened, openFailed, lastOpenError, fallbackClassified, sysfsClassified, probeOpenFailed, ioctlAvailable, strategyName)
         // Gọi callback ngoài lock để tránh deadlock (callback có thể gọi lại scanner).
         added.forEach { onDeviceAdded(it) }
     }
 
     /**
-     * Thử mở 1 node /dev/input/event* rồi phân loại bằng EVIOCGBIT.
-     * Trả InputDeviceInfo nếu là chuột/bàn phím, null nếu không phải
-     * hoặc mở/probe lỗi. Chỉ mở để probe rồi đóng ngay — DeviceReader
-     * sẽ mở lại khi thêm thiết bị. Tên đọc từ sysfs (không đọc được
-     * thì dùng tên node); tên nội (cảm ứng, nút nguồn...) thì loại.
+     * Kết quả 1 lần probe fallback cho 1 node: info (null nếu không
+     * phải chuột/phím hoặc probe lỗi), viaSysfs (phân loại bằng sysfs
+     * hay EVIOCGBIT), openFailed (mở FileInputStream lỗi — chỉ đường
+     * EVIOCGBIT mới mở node, sysfs không mở).
      */
-    private fun probeFallbackNode(node: File): InputDeviceInfo? {
+    private data class FallbackProbe(
+        val info: InputDeviceInfo?,
+        val viaSysfs: Boolean,
+        val openFailed: Boolean,
+    )
+
+    /**
+     * Phân loại 1 node /dev/input/event* mà /proc bỏ sót.
+     * Build-14: thử sysfs TRƯỚC (chỉ đọc file text, không cần ioctl,
+     * không cần mở node) — sysfs đọc được là đủ kết luận (chuột/phím
+     * hay không). Chỉ khi sysfs đọc lỗi mới thử mở node + phân loại
+     * bằng EVIOCGBIT (chỉ mở để probe rồi đóng ngay — DeviceReader sẽ
+     * mở lại khi thêm thiết bị). Tên đọc từ sysfs (không đọc được thì
+     * dùng tên node); tên nội (cảm ứng, nút nguồn...) thì loại.
+     */
+    private fun probeFallbackNode(node: File): FallbackProbe {
+        when (val s = SysfsCaps.probe(node.name)) {
+            is SysfsCaps.SysfsProbe.Read -> {
+                val kind = s.kind
+                if (kind != null) {
+                    val name = s.name ?: node.name
+                    return FallbackProbe(
+                        InputDeviceInfo(node.name, name, node.path, kind),
+                        viaSysfs = true, openFailed = false,
+                    )
+                }
+                // Sysfs đọc được nhưng không phân loại được — vẫn thử
+                // EVIOCGBIT đối chiếu (sysfs có thể báo thiếu mask trên
+                // ROM lạ; sửa theo Claude).
+            }
+            SysfsCaps.SysfsProbe.Unreadable -> {
+                // Sysfs đọc lỗi — rớt xuống EVIOCGBIT.
+            }
+        }
         val stream = try {
             FileInputStream(node)
         } catch (e: Exception) {
             Server.log("Fallback: không mở được ${node.path}: ${e.javaClass.simpleName}: ${e.message}")
-            return null
+            return FallbackProbe(null, viaSysfs = false, openFailed = true)
         }
         try {
             val fd = try {
                 stream.fd
             } catch (_: Exception) {
-                return null
+                return FallbackProbe(null, viaSysfs = false, openFailed = false)
             }
             return when (val r = EvdevCaps.probe(fd)) {
                 is EvdevCaps.ProbeResult.Ok -> {
-                    val kind = EvdevCaps.classify(r.masks) ?: return null
-                    val name = readSysfsName(node.name) ?: node.name
-                    if (InputEventParser.isInternalName(name)) return null
-                    InputDeviceInfo(node.name, name, node.path, kind)
+                    val kind = EvdevCaps.classify(r.masks)
+                        ?: return FallbackProbe(null, viaSysfs = false, openFailed = false)
+                    val name = SysfsCaps.readName(node.name) ?: node.name
+                    if (InputEventParser.isInternalName(name)) {
+                        return FallbackProbe(null, viaSysfs = false, openFailed = false)
+                    }
+                    FallbackProbe(
+                        InputDeviceInfo(node.name, name, node.path, kind),
+                        viaSysfs = false, openFailed = false,
+                    )
                 }
                 EvdevCaps.ProbeResult.ZeroMask -> {
                     if (!zeroMaskLogged) {
                         zeroMaskLogged = true
                         Server.log("Fallback: EVIOCGBIT đọc về 0 — libcore có thể không trả lại giá trị ioctl, bỏ qua phân loại EVIOCGBIT.")
                     }
-                    null
+                    FallbackProbe(null, viaSysfs = false, openFailed = false)
                 }
-                EvdevCaps.ProbeResult.IoctlFailed -> null
+                EvdevCaps.ProbeResult.IoctlFailed ->
+                    FallbackProbe(null, viaSysfs = false, openFailed = false)
             }
         } finally {
             try {
@@ -365,13 +436,6 @@ class DeviceScanner(
         }
     }
 
-    /** Tên thiết bị từ sysfs (/sys/class/input/eventN/device/name), null nếu không đọc được. */
-    private fun readSysfsName(id: String): String? = try {
-        File("/sys/class/input/$id/device/name").readText().trim().takeIf { it.isNotEmpty() }
-    } catch (_: Exception) {
-        null
-    }
-
     /**
      * Log tóm tắt 1 lần quét — chỉ log lại khi số liệu đổi (đỡ spam log
      * mỗi 2s), kèm gợi ý theo từng kiểu kẹt để lần test sau biết đường.
@@ -379,10 +443,13 @@ class DeviceScanner(
     private fun logScanSummary(
         procReadOk: Boolean, procBlocks: Int, parsed: Int, nodesOnDisk: Int,
         opened: Int, openFailed: Int, lastOpenError: String, fallbackClassified: Int,
+        sysfsClassified: Int, probeOpenFailed: Int, ioctlAvailable: Boolean, strategyName: String,
     ) {
         val summary = "Quét: /proc ${if (procReadOk) "$procBlocks khối" else "ĐỌC LỖI"}" +
             ", parse $parsed, đĩa $nodesOnDisk node, đang mở $opened" +
-            ", mở lỗi $openFailed, fallback $fallbackClassified" +
+            ", mở lỗi $openFailed, fallback $fallbackClassified (sysfs $sysfsClassified)" +
+            ", probe mở lỗi $probeOpenFailed" +
+            ", ioctl ${if (ioctlAvailable) "OK ($strategyName)" else "không dùng được"}" +
             if (lastOpenError.isNotBlank()) ", lỗi cuối: ${lastOpenError.take(80)}" else ""
         if (summary == lastSummaryLogged) return
         lastSummaryLogged = summary
@@ -390,7 +457,7 @@ class DeviceScanner(
         if (!procReadOk) {
             Server.log("Gợi ý: không đọc được /proc/bus/input/devices — kiểm tra quyền của tiến trình Server.")
         } else if (parsed == 0 && nodesOnDisk > 0 && fallbackClassified == 0) {
-            Server.log("Gợi ý: /proc parse ra 0 thiết bị nhưng /dev/input có $nodesOnDisk node — fallback EVIOCGBIT cũng không phân loại được node nào (xem strategy EVIOCGBIT ở đầu log).")
+            Server.log("Gợi ý: /proc parse ra 0 thiết bị nhưng /dev/input có $nodesOnDisk node — fallback sysfs + EVIOCGBIT cũng không phân loại được node nào (xem strategy EVIOCGBIT ở đầu log).")
         }
         if (openFailed > 0 && opened == 0) {
             Server.log("Gợi ý: mở fd thất bại cho mọi thiết bị — kiểm tra UID/nhóm input/SELinux (xem dòng UID + Nhóm ở đầu log).")

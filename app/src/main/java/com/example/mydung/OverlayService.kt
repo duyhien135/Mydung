@@ -118,8 +118,9 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         private val DEVICES_REGEX = Regex("devices=(\\d+)")
         // Build-13: diag= token chẩn đoán quét (vd "proc:12_parsed:2_
         // nodes:12_open:2_err:0_fb:0") — hiện khi devices=0 để biết Server
-        // kẹt ở bước nào.
-        private val DIAG_REGEX = Regex("diag=([A-Za-z0-9_:]+)")
+        // kẹt ở bước nào. Build-14 thêm _pf/_io/_sf/_st (st chứa "-" và
+        // "?" — vd "lc-mut?" — nên regex phải nhận cả 2 ký tự này).
+        private val DIAG_REGEX = Regex("diag=([A-Za-z0-9_:?.-]+)")
         // Build-11: di chuyển tam giác con trỏ tối đa ~120 lần/giây (8ms)
         // để đỡ gọi binder liên tục ở tần số quét cao (500Hz/NO LIMIT).
         private const val CURSOR_DOT_MIN_MOVE_INTERVAL_MS = 8L

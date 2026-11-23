@@ -22,6 +22,7 @@ echo "== Biên dịch code nguồn (trừ ServerManager, TouchPrefs) =="
   "$SRC/InputBus.kt" "$SRC/InputProtocol.kt" "$SRC/Grabber.kt" "$SRC/DeviceScanner.kt" \
   "$SRC/InputHub.kt" "$SRC/InputClient.kt" "$SRC/Server.kt" "$SRC/MacroPlayer.kt" \
   "$SRC/TouchEngine.kt" "$SRC/TouchMapper.kt" "$SRC/TouchProtocol.kt" "$SRC/EvdevCaps.kt" \
+  "$SRC/SysfsCaps.kt" \
   "$SRC/Injector.kt" "$SRC/TouchHub.kt" \
   "$SRC/Json.kt" "$SRC/Profile.kt" "$SRC/ProfileStore.kt" \
   "$SRC/TouchInjector.kt" "$SRC/Evdev.kt" "$SRC/RawEvdevInjector.kt" \
@@ -65,4 +66,6 @@ java -cp "$OUT/classes:$OUT/test-classes:$TC/junit.jar:$TC/hamcrest.jar:$TC/kotl
   com.example.mydung.server.ShellTest \
   com.example.mydung.server.ConfigTest \
   com.example.mydung.server.EvdevCapsTest \
-  com.example.mydung.server.ScanDiagnosticsTest
+  com.example.mydung.server.ScanDiagnosticsTest \
+  com.example.mydung.server.SysfsCapsTest \
+  com.example.mydung.server.ReflectiveEvdevCapsIoctlTest

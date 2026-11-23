@@ -186,7 +186,8 @@ object TouchProtocol {
         // phím không ăn (không có event nào tới được TouchMapper).
         // Build-13: diag= token chẩn đoán quét (vd "proc:12_parsed:2_
         // nodes:12_open:2_err:0_fb:0") — app hiện khi devices=0 để biết
-        // Server kẹt ở bước nào. Rỗng = không có chẩn đoán (tương thích cũ).
+        // Server kẹt ở bước nào. Build-14 thêm _pf/_io/_sf/_st.
+        // Rỗng = không có chẩn đoán (tương thích cũ).
         grabbed: Int = 0,
         grabFailed: Int = 0,
         devices: Int = 0,
