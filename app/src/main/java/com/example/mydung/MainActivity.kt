@@ -144,8 +144,6 @@ fun KeyTouchApp() {
                     method = method,
                     onMethodChange = { method = it },
                     onOpenAdbSetup = { showAdbSetup = true },
-                    onOpenInputTest = { showInputTest = true },
-                    onOpenTouchTest = { showTouchTest = true },
                 )
             }
         }

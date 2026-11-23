@@ -392,58 +392,48 @@ fun HomeScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
-        // Viên quyền: chỉ hiện quyền CHƯA cấp (đủ quyền thì ẩn cả hàng).
+        // Viên quyền: luôn hiện cả 4 (kiểu K7XD), xanh = đã cấp, cam = chưa.
         // Viên SHIZUKU chỉ liên quan khi dùng phương thức Shizuku.
-        val shizukuMissing = method == ActivationMethod.SHIZUKU &&
-            shizukuState !is ShizukuBridge.State.Ready
-        if (!overlayGranted || !notifGranted || !pinGranted || shizukuMissing) {
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                if (!overlayGranted) {
-                    PermissionChip("LỚP PHỦ", false) {
-                        context.startActivity(
-                            Intent(
-                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                Uri.parse("package:${context.packageName}"),
-                            ),
-                        )
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            PermissionChip("LỚP PHỦ", overlayGranted) {
+                context.startActivity(
+                    Intent(
+                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:${context.packageName}"),
+                    ),
+                )
+            }
+            PermissionChip("THÔNG BÁO", notifGranted) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+                    PackageManager.PERMISSION_GRANTED
+                ) {
+                    notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                        putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
                     }
+                    context.startActivity(intent)
                 }
-                if (!notifGranted) {
-                    PermissionChip("THÔNG BÁO", false) {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
-                            PackageManager.PERMISSION_GRANTED
-                        ) {
-                            notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        } else {
-                            val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-                                putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-                            }
-                            context.startActivity(intent)
-                        }
-                    }
+            }
+            PermissionChip("PIN", pinGranted) {
+                try {
+                    context.startActivity(
+                        Intent(
+                            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                            Uri.parse("package:${context.packageName}"),
+                        ),
+                    )
+                } catch (_: Exception) {
+                    context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
                 }
-                if (!pinGranted) {
-                    PermissionChip("PIN", false) {
-                        try {
-                            context.startActivity(
-                                Intent(
-                                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                                    Uri.parse("package:${context.packageName}"),
-                                ),
-                            )
-                        } catch (_: Exception) {
-                            context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-                        }
-                    }
-                }
-                if (shizukuMissing) {
-                    PermissionChip("SHIZUKU", false) {
-                        ShizukuBridge.openShizukuApp(context)
-                    }
+            }
+            if (method == ActivationMethod.SHIZUKU) {
+                PermissionChip("SHIZUKU", shizukuState is ShizukuBridge.State.Ready) {
+                    ShizukuBridge.openShizukuApp(context)
                 }
             }
         }
