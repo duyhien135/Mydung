@@ -187,6 +187,7 @@ object TouchProtocol {
         // Build-13: diag= token chẩn đoán quét (vd "proc:12_parsed:2_
         // nodes:12_open:2_err:0_fb:0") — app hiện khi devices=0 để biết
         // Server kẹt ở bước nào. Build-14 thêm _pf/_io/_sf/_st.
+        // Build-15 thêm _gs (grab strategy) và _ge (lỗi grab gần nhất).
         // Rỗng = không có chẩn đoán (tương thích cũ).
         grabbed: Int = 0,
         grabFailed: Int = 0,

@@ -1,6 +1,7 @@
 package com.example.mydung.server
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -68,14 +69,13 @@ class ProfileStoreTest {
     fun ensureDefault_createsWhenEmpty() {
         val store = ProfileStore(tempFile())
         val state = store.ensureDefault()
-        assertEquals(2, state.profiles.size)
-        assertEquals("Free Fire MAX", state.profiles[0].name)
-        assertEquals("com.dts.freefiremax", state.profiles[0].packageName)
-        assertEquals("Free Fire", state.profiles[1].name)
-        // Profile đang dùng mặc định là Free Fire MAX.
+        assertEquals(1, state.profiles.size)
+        assertEquals("Game mới", state.profiles[0].name)
+        assertNull(state.profiles[0].packageName)
+        // Profile đang dùng mặc định là profile duy nhất đó.
         assertEquals(state.profiles[0].id, state.activeId)
         // Lần 2 không tạo thêm.
-        assertEquals(2, store.ensureDefault().profiles.size)
+        assertEquals(1, store.ensureDefault().profiles.size)
     }
 
     @Test

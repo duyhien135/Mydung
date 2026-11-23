@@ -54,17 +54,17 @@ class ProfileStore(private val file: File) {
     }
 
     /**
-     * Đảm bảo luôn có ít nhất 1 profile: rỗng thì tạo 2 profile mặc định —
-     * Free Fire MAX (đang dùng, game chính của người dùng) + Free Fire
-     * bản thường. Lần sau load lại thì giữ nguyên, không tạo thêm.
+     * Đảm bảo luôn có ít nhất 1 profile: rỗng thì tạo 1 profile trống
+     * chưa gán game (người dùng tự chọn game đã cài). Không seed sẵn
+     * profile Free Fire/MAX theo package cố định — máy không cài các
+     * package đó thì chúng chỉ hiện "(chưa cài)" vô dụng.
      */
     fun ensureDefault(): State {
         val current = load()
         if (current.profiles.isNotEmpty()) return current
-        val max = ProfileCodec.defaultFreeFireMax()
-        val ff = ProfileCodec.defaultFreeFire()
-        save(listOf(max, ff), max.id)
-        return State(listOf(max, ff), max.id)
+        val fresh = ProfileCodec.defaultEmpty()
+        save(listOf(fresh), fresh.id)
+        return State(listOf(fresh), fresh.id)
     }
 
     companion object {

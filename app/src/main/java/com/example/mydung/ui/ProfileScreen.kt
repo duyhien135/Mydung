@@ -352,7 +352,9 @@ fun ProfileScreen(onBack: () -> Unit, showBack: Boolean = true) {
                                 },
                                 modifier = Modifier.fillMaxWidth(),
                             ) {
-                                Column(modifier = Modifier.fillMaxWidth()) {
+                                GameIcon(packageName = app.packageName, size = 40.dp)
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
                                     Text(app.label, fontWeight = FontWeight.Bold)
                                     Text(app.packageName, style = MaterialTheme.typography.bodySmall)
                                 }

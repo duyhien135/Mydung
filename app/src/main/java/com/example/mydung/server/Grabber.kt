@@ -35,8 +35,13 @@ sealed class GrabOutcome {
     object Grabbed : GrabOutcome()
     /** EBUSY: process khác (server cũ) đang giữ thiết bị. */
     object Busy : GrabOutcome()
-    /** Lỗi khác (không resolve được ioctl, fd hỏng...). */
-    data class Failed(val reason: String) : GrabOutcome()
+    /**
+     * Lỗi khác (không resolve được ioctl, fd hỏng...).
+     * code: mã lỗi ngắn, an toàn cho diag token (vd "no-ioctl",
+     * "ErrnoException:16", "IllegalArgumentException") — xem
+     * [Grabber.lastGrabError]. Mặc định = reason (cho test fake).
+     */
+    data class Failed(val reason: String, val code: String = reason) : GrabOutcome()
 }
 
 /**
@@ -105,41 +110,27 @@ class ReflectiveEvdevIoctl : EvdevIoctl {
     override fun resolve() {
         if (resolved) return
         resolved = true
-        val attempts = listOf(
-            "lc-mut" to { libcoreIoctl("libcore.util.MutableInt") },
-            "lc-i32" to { libcoreIoctl("libcore.io.Int32Ref") },
-            "os-mut" to { staticOsIoctl("libcore.util.MutableInt") },
-            "os-i32" to { staticOsIoctl("libcore.io.Int32Ref") },
+        // Build-15: dùng resolver chung với EVIOCGBIT — logic cũ (không
+        // có fallback "chưa kiểm chứng") từng loại oan cả 4 strategy
+        // trên máy thật nên grab không bao giờ chạy (grabbed=0 failed=2
+        // dù server thấy đủ thiết bị).
+        val r = IoctlReflectionResolver.resolve(
+            listOf(
+                "lc-mut" to { libcoreIoctl("libcore.util.MutableInt") },
+                "lc-i32" to { libcoreIoctl("libcore.io.Int32Ref") },
+                "os-mut" to { staticOsIoctl("libcore.util.MutableInt") },
+                "os-i32" to { staticOsIoctl("libcore.io.Int32Ref") },
+            ),
+            { fn -> fn(FileDescriptor()) },
+            "GRAB",
         )
-        val failures = ArrayList<String>()
-        for ((name, attempt) in attempts) {
-            try {
-                val fn = attempt()
-                // Dò bằng fd không hợp lệ: kỳ vọng ErrnoException (EBADF)
-                // chứng tỏ hàm gọi được tới kernel. Không lỗi (không ngờ)
-                // vẫn tính là gọi được.
-                try {
-                    fn(FileDescriptor())
-                } catch (e: Exception) {
-                    if (extractErrno(e) == null) throw e
-                }
-                invoker = fn
-                strategyName = name
-                Server.log("GRAB: dùng ioctl dạng $name.")
-                return
-            } catch (e: Exception) {
-                failures.add("$name: ${e.javaClass.simpleName}")
-            } catch (e: Error) {
-                failures.add("$name: ${e.javaClass.simpleName}")
-            }
-        }
-        strategyName = "none"
-        Server.log("GRAB: không dò được ioctl nào (${failures.joinToString(", ")}) -> không grab.")
+        invoker = r.invoker
+        strategyName = r.strategyName
     }
 
     override fun grab(fd: FileDescriptor): GrabOutcome {
         if (!resolved) resolve()
-        val fn = invoker ?: return GrabOutcome.Failed("không có ioctl")
+        val fn = invoker ?: return GrabOutcome.Failed("không có ioctl", "no-ioctl")
         return try {
             fn(fd)
             GrabOutcome.Grabbed
@@ -151,13 +142,26 @@ class ReflectiveEvdevIoctl : EvdevIoctl {
             } else {
                 val reason = "${e.javaClass.simpleName}: ${e.message}"
                 Server.log("GRAB: ioctl thất bại ($reason)")
-                GrabOutcome.Failed(reason)
+                GrabOutcome.Failed(reason, grabErrorCode(e))
             }
         } catch (e: Error) {
             val reason = "${e.javaClass.simpleName}: ${e.message}"
             Server.log("GRAB: ioctl thất bại ($reason)")
-            GrabOutcome.Failed(reason)
+            GrabOutcome.Failed(reason, grabErrorCode(e))
         }
+    }
+
+    /**
+     * Mã lỗi grab ngắn, an toàn cho diag token: tên class lỗi thật (bóc
+     * InvocationTargetException) + mã errno nếu có (vd "ErrnoException:16",
+     * "IllegalArgumentException").
+     */
+    private fun grabErrorCode(e: Throwable): String {
+        var t = e
+        while (t is java.lang.reflect.InvocationTargetException) t = t.targetException
+        val name = t.javaClass.simpleName
+        val errno = extractErrno(e)
+        return if (errno != null) "$name:$errno" else name
     }
 
     /** Libcore.os.ioctlInt(fd, cmd, refClass) — refClass là MutableInt hoặc Int32Ref. */
@@ -218,12 +222,34 @@ object Grabber {
     fun resolve() = backend.resolve()
 
     /**
+     * Lỗi grab gần nhất, an toàn cho diag token (build-15): "none" =
+     * chưa từng lỗi (chưa grab, hoặc grab toàn thành công), còn lại là
+     * mã lỗi (vd "no-ioctl", "ErrnoException:16"). CHỈ ghi khi grab
+     * LỖI — ghi cả khi thành công ("ok") thì 1 thiết bị fail rồi 1
+     * thiết bị ok sẽ hiện "ok", che mất lỗi (Claude soi). Số lượng
+     * thành công đã có trong grabbed/failed của MAPSTATUS.
+     * DeviceScanner đọc để đưa vào diag token (_ge) vì log server
+     * không đọc được từ app.
+     */
+    @Volatile
+    var lastGrabError: String = "none"
+        private set
+
+    /**
      * Grab thiết bị qua fd của reader. Trả true nếu grab được.
      * KHÔNG có nhả qua ioctl: muốn nhả thì đóng fd (xem
      * [DeviceScanner.reopenReader]).
      */
     fun grab(fd: FileDescriptor): Boolean {
         // EBUSY (server cũ còn giữ thiết bị) đã được backend log riêng.
-        return backend.grab(fd) is GrabOutcome.Grabbed
+        val outcome = backend.grab(fd)
+        when (outcome) {
+            is GrabOutcome.Grabbed -> { /* không ghi đè lỗi trước đó */ }
+            is GrabOutcome.Busy -> lastGrabError = "ErrnoException:16"
+            is GrabOutcome.Failed -> lastGrabError = outcome.code
+                .filter { it.isLetterOrDigit() || it == ':' || it == '-' || it == '_' || it == '.' }
+                .ifBlank { "Failed" }
+        }
+        return outcome is GrabOutcome.Grabbed
     }
 }

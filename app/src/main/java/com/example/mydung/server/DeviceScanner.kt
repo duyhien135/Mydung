@@ -40,12 +40,17 @@ data class ScanDiagnostics(
     val sysfsClassified: Int = 0,
     /** Tên strategy EVIOCGBIT đang dùng ("lc-mut", "none", "lc-mut?" = chưa kiểm chứng — build-14). */
     val strategyName: String = "none",
+    /** Tên strategy GRAB đang dùng ("lc-mut", "none", "lc-mut?" = chưa kiểm chứng — build-15). */
+    val grabStrategyName: String = "none",
+    /** Lỗi grab gần nhất ("none" = chưa từng lỗi, còn lại là mã lỗi — build-15). */
+    val lastGrabError: String = "none",
 ) {
     /**
      * Token 1 từ cho MAPSTATUS diag= (không chứa khoảng trắng).
      * 6 trường đầu giữ nguyên build-13 (proc/parsed/nodes/open/err/fb);
      * build-14 thêm pf (probe mở lỗi), io (ioctl dùng được 1/0), sf
-     * (sysfs phân loại được), st (strategy, "?" = chưa kiểm chứng).
+     * (sysfs phân loại được), st (strategy, "?" = chưa kiểm chứng);
+     * build-15 thêm gs (grab strategy) và ge (lỗi grab gần nhất).
      */
     fun token(): String {
         val proc = if (procReadOk) "$procBlocks" else "ERR"
@@ -58,7 +63,9 @@ data class ScanDiagnostics(
             "_pf:$probeOpenFailed" +
             "_io:${if (ioctlAvailable) 1 else 0}" +
             "_sf:$sysfsClassified" +
-            "_st:$strategyName"
+            "_st:$strategyName" +
+            "_gs:$grabStrategyName" +
+            "_ge:$lastGrabError"
     }
 }
 
@@ -347,6 +354,8 @@ class DeviceScanner(
             ioctlAvailable = ioctlAvailable,
             sysfsClassified = sysfsClassified,
             strategyName = strategyName,
+            grabStrategyName = Grabber.strategyName,
+            lastGrabError = Grabber.lastGrabError,
         )
         logScanSummary(procReadOk, procBlocks, parsed.size, diskNodes.size, opened, openFailed, lastOpenError, fallbackClassified, sysfsClassified, probeOpenFailed, ioctlAvailable, strategyName)
         // Gọi callback ngoài lock để tránh deadlock (callback có thể gọi lại scanner).

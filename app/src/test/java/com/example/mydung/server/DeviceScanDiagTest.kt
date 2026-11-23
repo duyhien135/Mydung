@@ -128,9 +128,10 @@ class ScanDiagnosticsTest {
             procReadOk = true, procBlocks = 12, parsedCount = 2, nodesOnDisk = 12,
             fallbackClassified = 1, openFailed = 0, openedCount = 3,
         )
-        // 6 trường đầu giữ nguyên build-13, thêm _pf/_io/_sf/_st (build-14).
+        // 6 trường đầu giữ nguyên build-13, thêm _pf/_io/_sf/_st (build-14)
+        // và _gs/_ge (build-15, mặc định none).
         assertEquals(
-            "proc:12_parsed:2_nodes:12_open:3_err:0_fb:1_pf:0_io:0_sf:0_st:none",
+            "proc:12_parsed:2_nodes:12_open:3_err:0_fb:1_pf:0_io:0_sf:0_st:none_gs:none_ge:none",
             d.token(),
         )
     }
@@ -144,9 +145,10 @@ class ScanDiagnosticsTest {
             fallbackClassified = 0, openFailed = 0, openedCount = 0,
             probeOpenFailed = 3, ioctlAvailable = true, sysfsClassified = 0,
             strategyName = "lc-mut?",
+            grabStrategyName = "lc-mut?", lastGrabError = "no-ioctl",
         )
         assertEquals(
-            "proc:ERR_parsed:0_nodes:7_open:0_err:0_fb:0_pf:3_io:1_sf:0_st:lc-mut?",
+            "proc:ERR_parsed:0_nodes:7_open:0_err:0_fb:0_pf:3_io:1_sf:0_st:lc-mut?_gs:lc-mut?_ge:no-ioctl",
             d.token(),
         )
     }
@@ -158,9 +160,10 @@ class ScanDiagnosticsTest {
             fallbackClassified = 1, openFailed = 0, openedCount = 1,
             probeOpenFailed = 0, ioctlAvailable = false, sysfsClassified = 1,
             strategyName = "none",
+            grabStrategyName = "lc-mut", lastGrabError = "none",
         )
         assertEquals(
-            "proc:ERR_parsed:0_nodes:7_open:1_err:0_fb:1_pf:0_io:0_sf:1_st:none",
+            "proc:ERR_parsed:0_nodes:7_open:1_err:0_fb:1_pf:0_io:0_sf:1_st:none_gs:lc-mut_ge:none",
             d.token(),
         )
     }
@@ -405,5 +408,48 @@ class ReflectiveEvdevCapsIoctlTest {
             ),
         )
         assertEquals("fake-b?", ioctl.strategyName)
+    }
+}
+
+/**
+ * Test resolver dùng chung (build-15) với invoker dạng Grabber
+ * ((FileDescriptor) -> Unit): cùng luật chọn như EvdevCaps nhưng
+ * kiểu invoker khác.
+ */
+class IoctlReflectionResolverTest {
+
+    @Test
+    fun verifiedUnitInvoker_noQuestionMark() {
+        val r = IoctlReflectionResolver.resolve(
+            listOf("fake-a" to { { _: FileDescriptor -> } }),
+            { fn -> fn(FileDescriptor()) },
+            "TEST",
+        )
+        assertEquals("fake-a", r.strategyName)
+        assertTrue(r.invoker != null)
+    }
+
+    @Test
+    fun ambiguousUnitInvoker_becomesUnverifiedCandidate() {
+        // Lỗi mơ hồ khi kiểm chứng -> giữ làm "chưa kiểm chứng".
+        val r = IoctlReflectionResolver.resolve(
+            listOf("fake-a" to { { _: FileDescriptor -> throw RuntimeException("ambiguous") } }),
+            { fn -> fn(FileDescriptor()) },
+            "TEST",
+        )
+        assertEquals("fake-a?", r.strategyName)
+        assertTrue(r.invoker != null)
+    }
+
+    @Test
+    fun structuralUnitInvoker_excluded() {
+        // Lỗi cấu trúc khi kiểm chứng -> loại hẳn, trả "none".
+        val r = IoctlReflectionResolver.resolve(
+            listOf("fake-a" to { { _: FileDescriptor -> throw IllegalArgumentException("bad arg") } }),
+            { fn -> fn(FileDescriptor()) },
+            "TEST",
+        )
+        assertEquals("none", r.strategyName)
+        assertNull(r.invoker)
     }
 }

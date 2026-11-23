@@ -226,7 +226,7 @@ class GrabberTest {
         val ioctl = ReflectiveEvdevIoctl()
         ioctl.resolve()
         assertEquals("none", ioctl.strategyName)
-        assertEquals(GrabOutcome.Failed("không có ioctl"), ioctl.grab(java.io.FileDescriptor()))
+        assertEquals(GrabOutcome.Failed("không có ioctl", "no-ioctl"), ioctl.grab(java.io.FileDescriptor()))
     }
 
     @Test
@@ -256,6 +256,34 @@ class GrabberTest {
     fun grab_withFakeFailure_returnsFalse() {
         Grabber.setIoctlForTest(FakeEvdevIoctl(GrabOutcome.Failed("lỗi giả")))
         assertEquals(false, Grabber.grab(java.io.FileDescriptor()))
+    }
+
+    @Test
+    fun grab_failure_recordsLastError() {
+        // Lỗi grab gần nhất được ghi lại để đưa vào diag token (_ge).
+        Grabber.setIoctlForTest(FakeEvdevIoctl(GrabOutcome.Failed("không có ioctl", "no-ioctl")))
+        assertEquals(false, Grabber.grab(java.io.FileDescriptor()))
+        assertEquals("no-ioctl", Grabber.lastGrabError)
+    }
+
+    @Test
+    fun grab_success_keepsLastError() {
+        // Grab thành công KHÔNG ghi đè lỗi trước đó (Claude soi): 1 thiết
+        // bị fail rồi 1 thiết bị ok thì _ge vẫn phải hiện lỗi, không được
+        // hiện "ok" che mất.
+        Grabber.setIoctlForTest(FakeEvdevIoctl(GrabOutcome.Failed("không có ioctl", "no-ioctl")))
+        assertEquals(false, Grabber.grab(java.io.FileDescriptor()))
+        assertEquals("no-ioctl", Grabber.lastGrabError)
+        Grabber.setIoctlForTest(FakeEvdevIoctl(GrabOutcome.Grabbed))
+        assertEquals(true, Grabber.grab(java.io.FileDescriptor()))
+        assertEquals("no-ioctl", Grabber.lastGrabError)
+    }
+
+    @Test
+    fun grab_busy_recordsErrno() {
+        Grabber.setIoctlForTest(FakeEvdevIoctl(GrabOutcome.Busy))
+        assertEquals(false, Grabber.grab(java.io.FileDescriptor()))
+        assertEquals("ErrnoException:16", Grabber.lastGrabError)
     }
 }
 

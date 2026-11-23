@@ -174,6 +174,9 @@ object ProfileCodec {
     /** Profile mặc định cho Free Fire MAX (package com.dts.freefiremax). */
     fun defaultFreeFireMax(): Profile = defaultFreeFire("Free Fire MAX", "com.dts.freefiremax")
 
+    /** Profile trống chưa gán game (vẫn dùng bố cục GĐ4 mặc định) — seed duy nhất khi chưa có profile nào. */
+    fun defaultEmpty(): Profile = defaultFreeFire("Game mới", null)
+
     private fun defaultFreeFire(name: String, packageName: String?): Profile {
         val buttonNames = mapOf(
             LinuxKey.BTN_LEFT to "Bắn",

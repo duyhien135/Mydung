@@ -165,6 +165,13 @@ fun HomeScreen(
     val pinGranted = remember(resumeTick) { isIgnoringBatteryOptimizations(context) }
     val shizukuInstalled = remember(resumeTick) { ShizukuBridge.isAppInstalled(context) }
 
+    // Shizuku: kiểm tra lại quyền mỗi lần quay về app — thu hồi quyền trong
+    // app Shizuku không gửi callback cho app này nên state có thể cũ (tưởng
+    // đã cấp quyền trong khi Shizuku báo 0 app được ủy quyền).
+    LaunchedEffect(resumeTick) {
+        ShizukuBridge.refreshState()
+    }
+
     val notifPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { resumeTick++ }
@@ -694,7 +701,9 @@ fun HomeScreen(
                                 },
                                 modifier = Modifier.fillMaxWidth(),
                             ) {
-                                Column(modifier = Modifier.fillMaxWidth()) {
+                                GameIcon(packageName = app.packageName, size = 40.dp)
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
                                     Text(app.label, fontWeight = FontWeight.Bold)
                                     Text(app.packageName, style = MaterialTheme.typography.bodySmall)
                                 }
@@ -736,9 +745,11 @@ private data class UsbDevice(val name: String, val isMouse: Boolean, val isKeybo
 
 /** Icon game lấy từ PackageManager (build-9: logo trên thẻ game tối giản).
  *  Vẽ Drawable thủ công sang Bitmap (không dùng core-ktx) rồi đổi sang
- *  ImageBitmap; không lấy được icon (game chưa gán/chưa cài) thì hiện 🎮. */
+ *  ImageBitmap; không lấy được icon (game chưa gán/chưa cài) thì hiện 🎮.
+ *  Dùng chung cho HomeScreen (thẻ game + dialog thêm game) và ProfileScreen
+ *  (dialog gán game) nên để public trong package ui. */
 @Composable
-private fun GameIcon(packageName: String?, size: Dp) {
+fun GameIcon(packageName: String?, size: Dp) {
     val context = LocalContext.current
     val bitmap = remember(packageName) {
         packageName?.let {
@@ -812,10 +823,12 @@ private fun isIgnoringBatteryOptimizations(context: Context): Boolean {
 // AppInfo + queryLaunchableApps dùng chung bản ở ProfileScreen.kt (cùng package ui).
 
 /**
- * Checklist kích hoạt (kiểu GG Mouse Pro): CHỈ hiện các bước chưa xong,
- * xong hết thì tự ẩn cả thẻ. Không còn bước "Khởi động Server" — Server
- * tự chạy ngầm, trạng thái của nó nằm ở dòng trạng thái trên màn chính.
- * Chỉ nút của bước chưa xong ĐẦU TIÊN được bấm.
+ * Checklist kích hoạt (kiểu GG Mouse Pro): hiện TẤT CẢ các bước, bước
+ * chưa xong màu đỏ, bước xong chuyển sang màu xanh lá (không ẩn bước
+ * đã xong — người dùng cần thấy trạng thái từng bước). Không còn bước
+ * "Khởi động Server" — Server tự chạy ngầm, trạng thái của nó nằm ở
+ * dòng trạng thái trên màn chính. Chỉ nút của bước chưa xong ĐẦU TIÊN
+ * được bấm.
  */
 @Composable
 private fun ActivationChecklist(
@@ -858,9 +871,9 @@ private fun ActivationChecklist(
             Step("Ghép cặp + kết nối ADB không dây", adbConnected, "Mở cài đặt ADB", onOpenAdbSetup),
         )
     }
-    // Chỉ hiện bước chưa xong; xong hết thì ẩn cả thẻ.
-    val pending = steps.filter { !it.done }
-    if (pending.isEmpty()) return
+    // Hiện tất cả các bước: chưa xong màu đỏ, xong rồi màu xanh lá.
+    // Không ẩn bước đã xong — người dùng cần thấy trạng thái từng bước.
+    val firstPendingIndex = steps.indexOfFirst { !it.done }
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -872,19 +885,19 @@ private fun ActivationChecklist(
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
             )
-            pending.forEachIndexed { i, step ->
+            steps.forEachIndexed { i, step ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
                         modifier = Modifier
                             .size(26.dp)
                             .background(
-                                Color(0xFF9E9E9E),
+                                if (step.done) Color(0xFF4CAF50) else Color(0xFFE53935),
                                 RoundedCornerShape(13.dp),
                             ),
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
-                            text = "${i + 1}",
+                            text = if (step.done) "✓" else "${i + 1}",
                             color = Color.White,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
@@ -896,7 +909,7 @@ private fun ActivationChecklist(
                         style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.weight(1f),
                     )
-                    if (i == 0 && step.actionLabel != null) {
+                    if (i == firstPendingIndex && step.actionLabel != null) {
                         OutlinedButton(
                             onClick = { step.action?.invoke() },
                         ) { Text(step.actionLabel, fontSize = 13.sp) }
