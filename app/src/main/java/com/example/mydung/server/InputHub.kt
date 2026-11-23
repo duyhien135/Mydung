@@ -34,6 +34,9 @@ object InputHub {
     /** Số thiết bị Server đang mở được (đọc event) — 0 = Server không thấy gì. */
     fun deviceCount(): Int = scanner.devices().size
 
+    /** Chẩn đoán lần quét gần nhất (cho MAPSTATUS diag=) — biết Server kẹt ở bước nào. */
+    fun scanDiagnostics(): ScanDiagnostics = scanner.diagnostics()
+
     /** Số thiết bị đang bị GRAB thật (grab thành công, không phải chỉ strategy). */
     fun grabbedCount(): Int = synchronized(grabbedIds) { grabbedIds.size }
 
@@ -80,6 +83,7 @@ object InputHub {
         if (started) return
         started = true
         Grabber.resolve()
+        EvdevCaps.resolve() // build-13: dò ioctl cho phân loại fallback EVIOCGBIT
         InputBus.subscribe(comboListener)
         InputBus.subscribe(logListener)
         scanner.start()

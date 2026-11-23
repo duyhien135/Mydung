@@ -601,29 +601,38 @@ fun EditorOverlay(
                             }
                         }
                         if (e.type == ElementType.AUTO_TAP) {
+                            // Tốc độ tap tính theo lần/s (1..20), vẫn lưu intervalMs
+                            // trong profile (intervalMs = round(1000 / rate)). Profile
+                            // cũ lưu intervalMs lẻ thì hiển thị rate làm tròn gần nhất.
+                            val rate = (1000f / e.intervalMs.coerceAtLeast(1L))
+                                .roundToInt().coerceIn(1, 20)
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("Khoảng tap", modifier = Modifier.width(80.dp))
-                                Slider(
-                                    value = e.intervalMs.toFloat(),
-                                    onValueChange = { v ->
-                                        if (!sliderUndoPushed) {
-                                            pushUndo()
-                                            sliderUndoPushed = true
-                                        }
-                                        updateElement(i, e.copy(intervalMs = v.toLong()))
-                                    },
-                                    onValueChangeFinished = { sliderUndoPushed = false },
-                                    valueRange = 50f..2000f,
-                                    modifier = Modifier.weight(1f),
-                                )
+                                Text("Tốc độ tap", modifier = Modifier.width(80.dp))
+                                TextButton(onClick = {
+                                    val newRate = (rate - 1).coerceIn(1, 20)
+                                    pushUndo()
+                                    updateElement(
+                                        i,
+                                        e.copy(intervalMs = (1000f / newRate).roundToInt().toLong()),
+                                    )
+                                }) { Text("−", fontSize = 18.sp) }
                                 Text(
-                                    text = "${e.intervalMs}ms",
-                                    modifier = Modifier.width(64.dp),
-                                    textAlign = TextAlign.End,
+                                    text = "$rate lần/s",
+                                    modifier = Modifier.width(72.dp),
+                                    textAlign = TextAlign.Center,
+                                    fontWeight = FontWeight.Bold,
                                 )
+                                TextButton(onClick = {
+                                    val newRate = (rate + 1).coerceIn(1, 20)
+                                    pushUndo()
+                                    updateElement(
+                                        i,
+                                        e.copy(intervalMs = (1000f / newRate).roundToInt().toLong()),
+                                    )
+                                }) { Text("+", fontSize = 18.sp) }
                             }
                             Text(
-                                "Giữ phím thì tap lặp tại vị trí này mỗi ${e.intervalMs}ms.",
+                                "Giữ phím thì tap lặp tại vị trí này $rate lần mỗi giây.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )

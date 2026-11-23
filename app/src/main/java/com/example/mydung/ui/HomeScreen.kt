@@ -287,7 +287,7 @@ fun HomeScreen(
 
     fun requestOverlayPermission(pending: String) {
         pendingOverlayAction = pending
-        hint = "Cần cấp quyền \"Hiển thị trên các ứng dụng khác\" cho KeyTouch."
+        hint = "Cần cấp quyền \"Hiển thị trên các ứng dụng khác\" cho H."
         val intent = Intent(
             Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
             Uri.parse("package:${context.packageName}"),
@@ -375,7 +375,7 @@ fun HomeScreen(
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text(
-            "KeyTouch",
+            "H",
             style = MaterialTheme.typography.headlineLarge,
             fontWeight = FontWeight.Bold,
         )
@@ -516,7 +516,7 @@ fun HomeScreen(
                         TextButton(onClick = {
                             val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                             cm.setPrimaryClip(
-                                ClipData.newPlainText("KeyTouch server log", logTail),
+                                ClipData.newPlainText("H server log", logTail),
                             )
                             Toast.makeText(context, "Đã chép log Server", Toast.LENGTH_SHORT).show()
                         }) { Text("Sao chép log") }
@@ -844,7 +844,7 @@ private fun ActivationChecklist(
                     onOpenShizuku,
                 ),
                 Step(
-                    "Cấp quyền cho KeyTouch trong Shizuku",
+                    "Cấp quyền cho H trong Shizuku",
                     permOk,
                     if (permDenied) "Mở Shizuku để cấp tay" else "Cấp quyền",
                     if (permDenied) onOpenShizuku else onRequestShizukuPermission,
@@ -852,7 +852,7 @@ private fun ActivationChecklist(
             )
         }
         ActivationMethod.ROOT -> listOf(
-            Step("Cấp quyền root cho KeyTouch", rootReady == true, "Kiểm tra lại", onReprobeRoot),
+            Step("Cấp quyền root cho H", rootReady == true, "Kiểm tra lại", onReprobeRoot),
         )
         ActivationMethod.ADB -> listOf(
             Step("Ghép cặp + kết nối ADB không dây", adbConnected, "Mở cài đặt ADB", onOpenAdbSetup),

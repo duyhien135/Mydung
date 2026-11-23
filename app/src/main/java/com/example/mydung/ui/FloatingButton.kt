@@ -296,7 +296,7 @@ fun FloatingButton(
                     }
                     MenuItem("⚙️ Cài đặt") { showSettings = true }
                     MenuItem("🙈 Ẩn lớp phủ") { closeMenu(); onHideOverlay() }
-                    MenuItem("📱 Mở app KeyTouch") { closeMenu(); onOpenApp() }
+                    MenuItem("📱 Mở app H") { closeMenu(); onOpenApp() }
                 } else {
                     SettingsPanel(
                         cursorSpeed = cursorSpeed,

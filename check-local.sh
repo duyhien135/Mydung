@@ -20,8 +20,8 @@ echo "== Biên dịch code nguồn (trừ ServerManager, TouchPrefs) =="
 "$KOTLINC" -d "$OUT/classes" \
   "$SRC/Config.kt" "$SRC/LinuxKey.kt" "$SRC/InputEvent.kt" "$SRC/FrameAssembler.kt" \
   "$SRC/InputBus.kt" "$SRC/InputProtocol.kt" "$SRC/Grabber.kt" "$SRC/DeviceScanner.kt" \
-  "$SRC/InputHub.kt" "$SRC/InputClient.kt" "$SRC/Server.kt" \
-  "$SRC/TouchEngine.kt" "$SRC/TouchMapper.kt" "$SRC/TouchProtocol.kt" \
+  "$SRC/InputHub.kt" "$SRC/InputClient.kt" "$SRC/Server.kt" "$SRC/MacroPlayer.kt" \
+  "$SRC/TouchEngine.kt" "$SRC/TouchMapper.kt" "$SRC/TouchProtocol.kt" "$SRC/EvdevCaps.kt" \
   "$SRC/Injector.kt" "$SRC/TouchHub.kt" \
   "$SRC/Json.kt" "$SRC/Profile.kt" "$SRC/ProfileStore.kt" \
   "$SRC/TouchInjector.kt" "$SRC/Evdev.kt" "$SRC/RawEvdevInjector.kt" \
@@ -41,7 +41,7 @@ TEST="$REPO/app/src/test/java/com/example/mydung"
   "$TEST/server/JsonTest.kt" "$TEST/server/ProfileCodecTest.kt" "$TEST/server/ProfileStoreTest.kt" \
   "$TEST/server/EvdevTest.kt" "$TEST/server/ForegroundTest.kt" \
   "$TEST/server/AutoSwitchTest.kt" "$TEST/server/ShellTest.kt" \
-  "$TEST/server/ConfigTest.kt" \
+  "$TEST/server/ConfigTest.kt" "$TEST/server/DeviceScanDiagTest.kt" \
   2>&1 | grep -v "^warning:" || true
 
 echo "== Chạy unit test =="
@@ -63,4 +63,6 @@ java -cp "$OUT/classes:$OUT/test-classes:$TC/junit.jar:$TC/hamcrest.jar:$TC/kotl
   com.example.mydung.server.ForegroundTest \
   com.example.mydung.server.AutoSwitchTest \
   com.example.mydung.server.ShellTest \
-  com.example.mydung.server.ConfigTest
+  com.example.mydung.server.ConfigTest \
+  com.example.mydung.server.EvdevCapsTest \
+  com.example.mydung.server.ScanDiagnosticsTest

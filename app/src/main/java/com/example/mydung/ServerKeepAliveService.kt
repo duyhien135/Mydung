@@ -95,7 +95,7 @@ class ServerKeepAliveService : Service() {
         val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
-                CHANNEL_ID, "Server KeyTouch", NotificationManager.IMPORTANCE_LOW,
+                CHANNEL_ID, "Server H", NotificationManager.IMPORTANCE_LOW,
             )
             channel.description = "Giữ kết nối tới Server chơi game khi app ở nền"
             manager.createNotificationChannel(channel)
@@ -109,7 +109,7 @@ class ServerKeepAliveService : Service() {
         )
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("KeyTouch")
+            .setContentTitle("H")
             .setContentText("Server đang chạy — giữ kết nối khi chơi game")
             .setContentIntent(openApp)
             .setOngoing(true)

@@ -184,9 +184,13 @@ object TouchProtocol {
         // devices=0 thì Server không đọc được thiết bị nào (mở fd lỗi hay
         // bị lọc ở bước classify) — đó là gốc của tam giác đứng im + gán
         // phím không ăn (không có event nào tới được TouchMapper).
+        // Build-13: diag= token chẩn đoán quét (vd "proc:12_parsed:2_
+        // nodes:12_open:2_err:0_fb:0") — app hiện khi devices=0 để biết
+        // Server kẹt ở bước nào. Rỗng = không có chẩn đoán (tương thích cũ).
         grabbed: Int = 0,
         grabFailed: Int = 0,
         devices: Int = 0,
+        diag: String = "",
     ): String {
         val d = display?.let { "${it.width}x${it.height}" } ?: "none"
         // Locale.US: dấu thập phân luôn là "." (locale vi dùng "," sẽ làm hỏng parse).
@@ -196,6 +200,7 @@ object TouchProtocol {
             "latencyMs=$latencyMs injectErr=$injectErr injectOk=${if (injectOk) 1 else 0} " +
             "injector=$injector mode=$mode cursor=$cx,$cy overlay=${if (overlayHidden) 1 else 0} " +
             "mouse=${if (mouseEnabled) 1 else 0} grab=$grabMethod " +
-            "grabbed=$grabbed failed=$grabFailed devices=$devices"
+            "grabbed=$grabbed failed=$grabFailed devices=$devices" +
+            if (diag.isNotBlank()) " diag=$diag" else ""
     }
 }

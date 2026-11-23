@@ -99,6 +99,11 @@ object InputEventParser {
     private val INTERNAL_NAME =
         Regex("(?i)touch|digitizer|pen|stylus|fts|goodix|synaptics|elan|wacom|power|pwrkey|sensor|accel|gyro|magnet|proxim|hall sensor|gpio|pogo|qpnp|pmic|fingerprint")
 
+    /** Tên thiết bị nội (cảm ứng, nút nguồn, cảm biến...) hay không.
+     *  Public để DeviceScanner dùng chung cho cả đường /proc lẫn fallback
+     *  EVIOCGBIT (tên fallback đọc từ sysfs). */
+    fun isInternalName(name: String): Boolean = INTERNAL_NAME.containsMatchIn(name)
+
     /**
      * Phân loại theo khả năng của từng node, không theo tên (1 thiết bị USB có thể
      * xuất nhiều node: bàn phím + phím media, chuột + bàn phím phụ).
@@ -108,7 +113,7 @@ object InputEventParser {
         name: String, eventNode: String, handlers: String,
         evMask: Long, relMask: Long, keyWords: List<Long>,
     ): InputDeviceInfo? {
-        if (INTERNAL_NAME.containsMatchIn(name)) return null
+        if (isInternalName(name)) return null
         val hasKey = hasBit(evMask, EV_KEY)
         val hasRel = hasBit(evMask, EV_REL)
         val hasAbs = hasBit(evMask, EV_ABS)

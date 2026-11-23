@@ -81,6 +81,10 @@ object Server {
         log("Đường dẫn APK: $apkPath")
         log("==========================================")
 
+        // Build-13: chẩn đoán quyền của tiến trình (lỗi devices=0) — nhóm
+        // input + số node event* trên đĩa (xem logStartupDiagnostics).
+        logStartupDiagnostics()
+
         // Đăng ký Shutdown Hook để đóng socket sạch sẽ
         Runtime.getRuntime().addShutdownHook(Thread {
             log("Nhận tín hiệu dừng (Shutdown Hook) -> nhả GRAB, hủy cảm ứng, đóng socket.")
@@ -474,6 +478,42 @@ object Server {
             running = false
             FgBus.unsubscribe(listener)
             thread?.interrupt()
+        }
+    }
+
+    /**
+     * Chẩn đoán quyền của tiến trình Server lúc khởi động (build-13, lỗi
+     * devices=0): nhóm của tiến trình (có nhóm input 1007 không — thiếu
+     * thì không mở được /dev/input/event* vì node thường root:input 660)
+     * + số node event* trên đĩa. Ghi vào log để đối chiếu khi Server
+     * không thấy thiết bị nào.
+     */
+    private fun logStartupDiagnostics() {
+        val groups = try {
+            File("/proc/self/status").readLines()
+                .firstOrNull { it.startsWith("Groups:") }
+                ?.substringAfter("Groups:")
+                ?.trim()
+                ?.split("\\s+".toRegex())
+                ?.mapNotNull { it.toIntOrNull() }
+                ?: emptyList()
+        } catch (e: Exception) {
+            log("Chẩn đoán quyền: không đọc được /proc/self/status: ${e.message}")
+            emptyList()
+        }
+        if (groups.isNotEmpty()) {
+            val hasInput = Config.INPUT_GROUP_ID in groups
+            log(
+                "Nhóm của tiến trình Server: ${groups.joinToString(", ")} " +
+                    "(nhóm input ${Config.INPUT_GROUP_ID}: " +
+                    if (hasInput) "CÓ" else "KHÔNG — có thể không mở được /dev/input/event*" + ")",
+            )
+        }
+        try {
+            val nodes = File("/dev/input").listFiles { f -> f.name.startsWith("event") }?.size ?: -1
+            if (nodes >= 0) log("/dev/input: $nodes node event* trên đĩa.")
+        } catch (e: Exception) {
+            log("Chẩn đoán quyền: không liệt kê được /dev/input: ${e.message}")
         }
     }
 

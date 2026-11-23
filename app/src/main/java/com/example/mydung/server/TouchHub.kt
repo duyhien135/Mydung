@@ -436,6 +436,9 @@ object TouchHub {
             grabbed = InputHub.grabbedCount(),
             grabFailed = InputHub.lastGrabFailed,
             devices = InputHub.deviceCount(),
+            // Build-13: chẩn đoán quét (proc/parse/mở/lỗi/fallback) — app
+            // hiện khi devices=0 để biết Server kẹt ở bước nào.
+            diag = InputHub.scanDiagnostics().token(),
         )
     }
 

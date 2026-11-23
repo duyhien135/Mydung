@@ -351,7 +351,7 @@ object ServerManager {
         scope.launch {
             if (!executor.isReady()) {
                 val err = "Chưa kích hoạt ${executor.label}! " + when (executor.method) {
-                    ActivationMethod.SHIZUKU -> "Mở app Shizuku bấm Start rồi cấp quyền cho KeyTouch trước."
+                    ActivationMethod.SHIZUKU -> "Mở app Shizuku bấm Start rồi cấp quyền cho H trước."
                     ActivationMethod.ROOT -> "Máy chưa có quyền root (su không chạy được)."
                     ActivationMethod.ADB -> "Cần kết nối gỡ lỗi không dây trước để khởi động Server."
                 }

@@ -210,7 +210,7 @@ fun SettingsScreen(
                     Text(
                         "• Trong Tùy chọn nhà phát triển, bật thêm \"Gỡ lỗi USB (cài đặt bảo mật)\" " +
                             "— thiếu thì tiêm chạm có thể âm thầm thất bại.\n" +
-                            "• Bật Tự khởi động cho KeyTouch trong Cài đặt → Ứng dụng → KeyTouch " +
+                            "• Bật Tự khởi động cho H trong Cài đặt → Ứng dụng → H " +
                             "(HyperOS giết app nền rất mạnh).",
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -355,7 +355,7 @@ fun SettingsScreen(
             Row {
                 TextButton(onClick = {
                     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    cm.setPrimaryClip(ClipData.newPlainText("KeyTouch log", logMessages.joinToString("\n")))
+                    cm.setPrimaryClip(ClipData.newPlainText("H log", logMessages.joinToString("\n")))
                     Toast.makeText(context, "Đã chép log", Toast.LENGTH_SHORT).show()
                 }) { Text("Chép log") }
                 TextButton(onClick = { logMessages = emptyList() }) { Text("Xóa log") }
@@ -408,7 +408,7 @@ fun SettingsScreen(
             }
         }
         Text(
-            "KeyTouch $versionName (code ${ServerManager.getAppVersionCode(context)}) — " +
+            "H $versionName (code ${ServerManager.getAppVersionCode(context)}) — " +
                 context.packageName,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

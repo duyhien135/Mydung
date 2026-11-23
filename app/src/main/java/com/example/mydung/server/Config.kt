@@ -39,6 +39,23 @@ object Config {
     // ioctl EVIOCGRAB = _IOW('E', 0x90, int)
     const val EVIOCGRAB = 0x40044590
 
+    // Build-13: ioctl EVIOCGBIT(ev, len) = _IOR('E', 0x20 + ev, len),
+    // len = 4 (đọc 4 byte đầu của bitmap — đủ cho EV/REL/KEY word 0).
+    // Phân loại thiết bị fallback khi /proc bỏ sót (xem EvdevCaps).
+    // Số hex > 0x7FFFFFFF nên không viết trực tiếp thành const Int được
+    // (Kotlin suy ra Long) — dùng val + .toInt() (bit giữ nguyên).
+    val EVIOCGBIT_EV = 0x80044520.toInt() // EVIOCGBIT(0, 4)
+    val EVIOCGBIT_KEY = 0x80044521.toInt() // EVIOCGBIT(1, 4)
+    val EVIOCGBIT_REL = 0x80044522.toInt() // EVIOCGBIT(2, 4)
+    val EVIOCGBIT_ABS = 0x80044523.toInt() // EVIOCGBIT(3, 4)
+
+    // Build-13: chẩn đoán + fallback quét thiết bị (lỗi devices=0).
+    // INPUT_GROUP_ID: gid nhóm "input" — tiến trình Server phải thuộc
+    // nhóm này mới đọc được /dev/input/event* (thường root:input 660).
+    const val INPUT_GROUP_ID = 1007
+    // Thử lại node fallback bị loại sau 30s (tránh mở/probe liên tục mỗi 2s).
+    const val FALLBACK_REPROBE_MS = 30_000L
+
     // GĐ4: tiêm cảm ứng đa điểm
     const val MOVE_MIN_INTERVAL_MS = 8L // gộp MOVE: tối đa ~120Hz
     const val CAMERA_IDLE_RELEASE_MS = 150L // chuột đứng yên quá ngưỡng thì nhả ngón camera
